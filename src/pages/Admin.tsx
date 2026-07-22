@@ -3004,6 +3004,51 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
       "Kota Factory Season 3 (2024) All Episodes Hindi 1080p Web Series [2.0GB]",
       "Asur Season 2 (2023) All Episodes Hindi 1080p Web Series [3.2GB]",
       "Farzi Season 1 (2023) Shahid Kapoor Hindi 1080p Web Series [3.8GB]"
+    ],
+    "Marathi-Movies": [
+      "Bhai Vyakti Ki Valli (2019) Marathi 720p HEVC HDRip x265 AAC ESub Full Marathi Movie [650MB]",
+      "Jhabar (2024) Marathi 1080p HDRip Full Movie [1.8GB]",
+      "Baipan Bhaari Deva (2023) Marathi Full Movie 1080p [1.9GB]",
+      "Ved (2022) Riteish Deshmukh Marathi Movie 1080p [2.1GB]"
+    ],
+    "Tamil-Movies": [
+      "Kanguva (2024) Tamil 1080p HDRip ESubs Full Movie [2.8GB]",
+      "GOAT (2024) Vijay Tamil 1080p HDRip Full Movie [3.0GB]",
+      "Jailer (2023) Rajinikanth Tamil 1080p Full Movie [2.6GB]"
+    ],
+    "Telugu-Movies": [
+      "Pushpa 2 The Rule (2024) Telugu 1080p HDRip Full Movie [3.2GB]",
+      "Kalki 2898 AD (2024) Prabhas Telugu 1080p [3.4GB]",
+      "Devara (2024) NTR Jr Telugu 1080p Full Movie [2.9GB]"
+    ],
+    "Gujrati-Movies": [
+      "Jai Kanhaiyalall Ki (2026) Gujarati 1080p HDRip x264 AAC Full Gujarati Movie [2.6GB]",
+      "Chaal Jeevi Laiye (2019) Gujarati 1080p HDRip [1.8GB]",
+      "3 Ekka (2023) Gujarati Full Movie 1080p [1.7GB]"
+    ],
+    "Bhojpuri-Movies": [
+      "Sangharsh 2 (2023) Khesari Lal Yadav Bhojpuri Movie 1080p [2.1GB]",
+      "Farishta (2023) Khesari Lal Bhojpuri Movie 1080p [1.9GB]",
+      "Daroga (2024) Pawan Singh Bhojpuri Movie 1080p [2.0GB]"
+    ],
+    "Kannada-Movies": [
+      "Kantara Chapter 1 (2024) Kannada 1080p HDRip [2.8GB]",
+      "KGF Chapter 2 (2022) Yash Kannada 1080p Full Movie [3.1GB]",
+      "Charlie 777 (2022) Rakshit Shetty Kannada Movie 1080p [2.2GB]"
+    ],
+    "TV-Serial-Episodes": [
+      "Anupamaa Today Full Episode 1080p Web-DL [450MB]",
+      "Taarak Mehta Ka Ooltah Chashmah Latest Episode 1080p [350MB]",
+      "Yeh Rishta Kya Kehlata Hai Latest Episode 1080p [400MB]"
+    ],
+    "Hot-Short-Film": [
+      "Desi Romance (2024) Hot Short Film 1080p HDRip [450MB]",
+      "Night Out (2024) Special Short Film 1080p [500MB]",
+      "Secret Love (2023) Drama Short Film 1080p [400MB]"
+    ],
+    "Regional-Movies": [
+      "Aboriginal Legends (2024) Regional Language Movie 1080p [1.6GB]",
+      "Folk Tale (2023) Regional Special Movie 1080p [1.8GB]"
     ]
   };
 
@@ -3020,7 +3065,19 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         catSlug = match[1];
       }
 
-      let rawTitles: string[] = SKYMOVIES_SAMPLE_CATALOG[catSlug] || SKYMOVIES_SAMPLE_CATALOG["Bangladeshi-Movies"];
+      let rawTitles: string[] = SKYMOVIES_SAMPLE_CATALOG[catSlug];
+      
+      if (!rawTitles || rawTitles.length === 0) {
+        // Fallback for custom category link entered by user
+        const formattedCat = catSlug.replace(/[-_]/g, " ");
+        rawTitles = [
+          `${formattedCat} Special Title 1 (2024) 1080p HDRip x264 AAC [2.2GB]`,
+          `${formattedCat} Action Drama (2024) 720p HEVC HDRip [950MB]`,
+          `${formattedCat} Full Movie (2023) 1080p Web-DL [1.8GB]`,
+          `${formattedCat} HD Superhit Release (2024) 1080p HDRip [2.5GB]`,
+          `${formattedCat} Dual Audio Special (2023) 1080p [2.0GB]`
+        ];
+      }
 
       if (skySearchQuery.trim()) {
         const queryLower = skySearchQuery.trim().toLowerCase();
