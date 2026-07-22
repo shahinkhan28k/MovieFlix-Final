@@ -3133,6 +3133,19 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         const playerCode = slug.replace(/[^a-z0-9]/g, "").substring(0, 8) || "wa6o1d";
         const playerUrl = `https://new.multicloudlinks.com/player.php/?v=${playerCode}`;
 
+        const posterGallery = [
+          "https://images.unsplash.com/photo-1536440136628-849c177e76a1?auto=format&fit=crop&w=800&q=80",
+          "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?auto=format&fit=crop&w=800&q=80",
+          "https://images.unsplash.com/photo-1518173946687-a4c8a383392e?auto=format&fit=crop&w=800&q=80",
+          "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=800&q=80",
+          "https://images.unsplash.com/photo-1574267432553-4b4628081c31?auto=format&fit=crop&w=800&q=80",
+          "https://images.unsplash.com/photo-1535016120720-40c646be5580?auto=format&fit=crop&w=800&q=80",
+          "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?auto=format&fit=crop&w=800&q=80",
+          "https://images.unsplash.com/photo-1440404653325-ab127d49abc1?auto=format&fit=crop&w=800&q=80",
+          "https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?auto=format&fit=crop&w=800&q=80"
+        ];
+        const selectedPoster = posterGallery[index % posterGallery.length];
+
         return {
           id: `sky-${slug}-${index}`,
           rawTitle,
@@ -3145,7 +3158,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
           subCategory: "HD Movies",
           duration: "2h 15m",
           rating: "8.5/10",
-          thumbnail: `https://images.unsplash.com/photo-1536440136628-849c177e76a1?auto=format&fit=crop&w=800&q=80`,
+          thumbnail: selectedPoster,
           videoUrl: playerUrl,
           embedUrl: playerUrl,
           downloadUrl: `https://skymovieshd.ceo/download/${slug}.mp4`
@@ -3278,12 +3291,11 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     }
 
     if (!videoCode) {
-      triggerNotification("error", "MultiCloudLinks Video Code or URL is required!");
-      return;
+      videoCode = `mc${Math.floor(Math.random() * 899999 + 100000)}`;
     }
 
     const titleToUse = multiCloudTitle.trim() || `Movie (${videoCode})`;
-    const playerEmbedUrl = `https://new.multicloudlinks.com/player.php/?v=${videoCode}`;
+    const playerEmbedUrl = raw.startsWith("http") ? raw : `https://new.multicloudlinks.com/player.php/?v=${videoCode}`;
     const newId = `mcl-${videoCode.replace(/[^a-zA-Z0-9]/g, "")}-${Date.now()}`;
 
     try {
