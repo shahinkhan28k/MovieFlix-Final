@@ -19,6 +19,7 @@ export interface Movie {
   tmdbId?: number | string;
   imdbId?: string;
   embedUrl?: string;
+  downloadUrl?: string;
 }
 
 export interface WatchHistoryItem {

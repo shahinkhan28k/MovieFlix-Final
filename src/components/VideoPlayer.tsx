@@ -16,7 +16,14 @@ import {
   Share2,
   AlertCircle,
   Server,
-  RefreshCw
+  RefreshCw,
+  Download,
+  ExternalLink,
+  ShieldCheck,
+  Film,
+  Copy,
+  Check,
+  Info
 } from "lucide-react";
 import { Movie } from "../types";
 
@@ -61,10 +68,31 @@ export default function VideoPlayer({
   const [isTheaterMode, setIsTheaterMode] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
 
-  // Server selection state: "server1" (Imported URL), "server2" (Embed CDN), "server3" (Backup MP4 CDN), "server4" (YouTube Trailer/Movie)
+  // Server selection state:
+  // "server1" -> Primary Stream URL / Embed
+  // "server2" -> Embed Mirror (Vidsrc / Archive / Autoembed)
+  // "server3" -> High-Speed Full HD Backup Stream
+  // "server4" -> Unblocked YouTube / Invidious Proxy Engine
   const [activeServer, setActiveServer] = useState<"server1" | "server2" | "server3" | "server4">("server1");
+  const [ytProxyEngine, setYtProxyEngine] = useState<"nocookie" | "invidious" | "piped">("nocookie");
   const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
+
+  // Extract YouTube Video ID if present
+  const youtubeId = useMemo(() => {
+    const raw = movie.videoUrl || movie.embedUrl || "";
+    if (raw.includes("v=")) {
+      return raw.split("v=")[1]?.split("&")[0] || "";
+    } else if (raw.includes("youtu.be/")) {
+      return raw.split("youtu.be/")[1]?.split("?")[0] || "";
+    } else if (raw.includes("/embed/")) {
+      const parts = raw.split("/embed/")[1]?.split("?")[0] || "";
+      if (parts && !parts.includes("/")) return parts;
+    }
+    return "";
+  }, [movie]);
 
   // Derive movie stream URL or iframe embed based on active server
   const currentStreamInfo = useMemo(() => {
@@ -85,8 +113,18 @@ export default function VideoPlayer({
       }
       url = BACKUP_MP4_POOL[numericHash % BACKUP_MP4_POOL.length];
     } else if (activeServer === "server4") {
-      const query = encodeURIComponent(`${movie.title} ${movie.year || ""} official trailer`);
-      url = `https://www.youtube-nocookie.com/embed?listType=search&list=${query}`;
+      if (youtubeId) {
+        if (ytProxyEngine === "invidious") {
+          url = `https://invidious.nerdvpn.de/embed/${youtubeId}?autoplay=1`;
+        } else if (ytProxyEngine === "piped") {
+          url = `https://piped.video/embed/${youtubeId}?autoplay=1`;
+        } else {
+          url = `https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=1&rel=0&modestbranding=1`;
+        }
+      } else {
+        const query = encodeURIComponent(`${movie.title} ${movie.year || ""} official trailer`);
+        url = `https://www.youtube-nocookie.com/embed?listType=search&list=${query}`;
+      }
     }
 
     // Process Internet Archive, YouTube, and Embed URLs
@@ -104,16 +142,10 @@ export default function VideoPlayer({
           url = `https://archive.org/embed/${iaId}`;
         }
       }
-    } else if (url.includes("youtube.com/watch") || url.includes("youtu.be/")) {
+    } else if (youtubeId || url.includes("youtube.com/watch") || url.includes("youtu.be/")) {
       isIframe = true;
-      let videoId = "";
-      if (url.includes("v=")) {
-        videoId = url.split("v=")[1]?.split("&")[0] || "";
-      } else if (url.includes("youtu.be/")) {
-        videoId = url.split("youtu.be/")[1]?.split("?")[0] || "";
-      }
-      if (videoId) {
-        url = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1`;
+      if (activeServer !== "server4" && youtubeId) {
+        url = `https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=1&rel=0&modestbranding=1`;
       }
     } else if (
       url.includes("/embed/") ||
@@ -121,13 +153,15 @@ export default function VideoPlayer({
       url.includes("autoembed") ||
       url.includes("2embed") ||
       url.includes("player") ||
-      url.includes("youtube.com/embed")
+      url.includes("youtube.com/embed") ||
+      url.includes("dailymotion.com/embed") ||
+      url.includes("player.vimeo.com")
     ) {
       isIframe = true;
     }
 
     return { url, isIframe };
-  }, [movie, activeServer]);
+  }, [movie, activeServer, youtubeId, ytProxyEngine]);
 
   // Auto-hide controls when mouse is inactive
   useEffect(() => {
@@ -301,7 +335,7 @@ export default function VideoPlayer({
 
   const handleVideoError = () => {
     if (activeServer === "server1") {
-      setFallbackMessage("Primary stream encountered CORS/playback block. Auto-switched to High-Speed Backup CDN (Server 3).");
+      setFallbackMessage("Primary stream restricted/CORS error. Auto-switched to High-Speed Backup Server (Server 3).");
       setActiveServer("server3");
       setHasError(false);
     } else if (activeServer === "server2") {
@@ -313,22 +347,55 @@ export default function VideoPlayer({
     }
   };
 
+  // Direct open watch stream in unblocked external popup or tab
+  const handleOpenDirectWatch = () => {
+    let watchUrl = currentStreamInfo.url;
+    if (youtubeId) {
+      watchUrl = `https://www.youtube.com/watch?v=${youtubeId}`;
+    }
+    window.open(watchUrl, "_blank", "noopener,noreferrer");
+  };
+
+  // Trigger Download
+  const handleDownload = () => {
+    let downloadTarget = movie.downloadUrl || movie.videoUrl || currentStreamInfo.url;
+    
+    // If it's a direct mp4/webm file, trigger download
+    if (downloadTarget.endsWith(".mp4") || downloadTarget.endsWith(".m3u8") || downloadTarget.endsWith(".webm")) {
+      const a = document.createElement("a");
+      a.href = downloadTarget;
+      a.download = `${movie.title.replace(/[^a-zA-Z0-9]/g, "_")}.mp4`;
+      a.target = "_blank";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } else {
+      setShowDownloadModal(true);
+    }
+  };
+
+  const handleShareLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
   return (
     <div className={`w-full ${isTheaterMode ? "max-w-full" : "max-w-5xl mx-auto"} flex flex-col gap-6`}>
-      {/* Top action header & Server Switcher */}
+      {/* Top action header & Unblocked Server Switcher */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 px-2 select-none">
         <button
           onClick={onBack}
           className="flex items-center gap-2 text-neutral-400 hover:text-white transition-colors text-sm font-semibold py-1.5 cursor-pointer"
         >
           <ArrowLeft size={16} />
-          <span>Back to Browse</span>
+          <span>Back to Catalog</span>
         </button>
 
         {/* Streaming Server Selector Bar */}
         <div className="flex items-center flex-wrap gap-2 text-xs">
           <div className="flex items-center gap-1 text-neutral-400 mr-1 font-mono text-[11px]">
-            <Server size={13} className="text-red-500" />
+            <Server size={13} className="text-red-500 animate-pulse" />
             <span>Server:</span>
           </div>
           
@@ -351,7 +418,7 @@ export default function VideoPlayer({
                 : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
             }`}
           >
-            Server 2 (Embed)
+            Server 2 (Embed Mirror)
           </button>
 
           <button
@@ -362,22 +429,44 @@ export default function VideoPlayer({
                 : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
             }`}
           >
-            Server 3 (Full HD)
+            Server 3 (Full HD Direct)
           </button>
 
+          {youtubeId && (
+            <button
+              onClick={() => { setActiveServer("server4"); setHasError(false); setFallbackMessage(null); }}
+              className={`px-2.5 py-1 rounded border transition-all cursor-pointer font-bold ${
+                activeServer === "server4"
+                  ? "bg-red-600 border-red-500 text-white shadow"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
+              }`}
+            >
+              Server 4 (YouTube Proxy)
+            </button>
+          )}
+
+          {/* Unblocked Direct Watch Button */}
           <button
-            onClick={() => { setActiveServer("server4"); setHasError(false); setFallbackMessage(null); }}
-            className={`px-2.5 py-1 rounded border transition-all cursor-pointer font-bold ${
-              activeServer === "server4"
-                ? "bg-red-600 border-red-500 text-white shadow"
-                : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
-            }`}
+            onClick={handleOpenDirectWatch}
+            className="px-2.5 py-1 bg-emerald-700/80 hover:bg-emerald-600 border border-emerald-500/80 text-white font-bold rounded flex items-center gap-1.5 transition-all shadow cursor-pointer text-[11px]"
+            title="Opens video stream in unblocked direct window"
           >
-            Server 4 (YouTube)
+            <ExternalLink size={12} />
+            <span>সরাসরি দেখুন</span>
+          </button>
+
+          {/* Download Button */}
+          <button
+            onClick={handleDownload}
+            className="px-2.5 py-1 bg-blue-700/80 hover:bg-blue-600 border border-blue-500/80 text-white font-bold rounded flex items-center gap-1.5 transition-all shadow cursor-pointer text-[11px]"
+            title="Download Movie or Video File"
+          >
+            <Download size={12} />
+            <span>ডাউনলোড</span>
           </button>
         </div>
 
-        <div className="flex items-center gap-4 text-xs">
+        <div className="flex items-center gap-3 text-xs">
           {onToggleFavorite && (
             <button
               onClick={onToggleFavorite}
@@ -393,6 +482,14 @@ export default function VideoPlayer({
           )}
 
           <button
+            onClick={handleShareLink}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white rounded transition-colors cursor-pointer"
+          >
+            {copiedLink ? <Check size={13} className="text-green-500" /> : <Share2 size={13} />}
+            <span>{copiedLink ? "Copied!" : "Share"}</span>
+          </button>
+
+          <button
             onClick={() => setIsTheaterMode(!isTheaterMode)}
             className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded border transition-colors cursor-pointer ${
               isTheaterMode
@@ -405,6 +502,42 @@ export default function VideoPlayer({
           </button>
         </div>
       </div>
+
+      {/* Unblocked Proxy Switcher when on YouTube Server 4 */}
+      {activeServer === "server4" && youtubeId && (
+        <div className="bg-neutral-900/90 border border-neutral-800 rounded-lg p-2.5 px-4 text-xs flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-neutral-300">
+            <ShieldCheck size={14} className="text-green-400" />
+            <span>YouTube Unblock Proxy:</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setYtProxyEngine("nocookie")}
+              className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                ytProxyEngine === "nocookie" ? "bg-red-600 text-white" : "bg-neutral-800 text-neutral-400 hover:text-white"
+              }`}
+            >
+              No-Cookie Engine
+            </button>
+            <button
+              onClick={() => setYtProxyEngine("invidious")}
+              className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                ytProxyEngine === "invidious" ? "bg-red-600 text-white" : "bg-neutral-800 text-neutral-400 hover:text-white"
+              }`}
+            >
+              Invidious Proxy (Unblocks Embedded Restrictions)
+            </button>
+            <button
+              onClick={() => setYtProxyEngine("piped")}
+              className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                ytProxyEngine === "piped" ? "bg-red-600 text-white" : "bg-neutral-800 text-neutral-400 hover:text-white"
+              }`}
+            >
+              Piped Proxy
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Auto-Fallback Banner Notification */}
       {fallbackMessage && (
@@ -428,41 +561,59 @@ export default function VideoPlayer({
       >
         {hasError ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-neutral-950 p-6 text-center select-none">
-            <AlertCircle size={48} className="text-red-500 mb-4 animate-bounce" />
-            <h4 className="text-lg font-bold text-neutral-200 font-sans">Unable to Stream Video on Server 1</h4>
-            <p className="text-xs text-neutral-400 max-w-md mt-1 leading-relaxed">
-              This video link encountered a CORS block or source timeout. Please switch to <span className="text-white font-bold">Server 3 (Full HD)</span> or <span className="text-white font-bold">Server 4 (YouTube)</span> above.
+            <AlertCircle size={48} className="text-red-500 mb-3 animate-bounce" />
+            <h4 className="text-lg font-bold text-neutral-200 font-sans">ভিডিও প্লে হতে সমস্যা বা ব্লক দেখাচ্ছে?</h4>
+            <p className="text-xs text-neutral-400 max-w-lg mt-1 leading-relaxed">
+              যেকোনো থার্ড-পার্টি প্লেয়ার বা সাইটের ভিডিও এম্বেড সীমাবদ্ধ থাকলে নিচের যেকোনো একটি অপশন ব্যবহার করুন (১০০% কাজ করবে):
             </p>
-            <div className="flex items-center gap-3 mt-5">
+            <div className="flex flex-wrap items-center justify-center gap-3 mt-5">
+              <button
+                onClick={handleOpenDirectWatch}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded transition-all shadow-lg flex items-center gap-2 cursor-pointer"
+              >
+                <ExternalLink size={14} />
+                <span>সরাসরি উইন্ডোতে প্লে করুন (Unblocked Player)</span>
+              </button>
               <button
                 onClick={() => {
                   setActiveServer("server3");
                   setHasError(false);
                 }}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded transition-all shadow-lg"
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded transition-all shadow-lg cursor-pointer"
               >
-                Switch to Server 3 (Backup HD)
+                Switch to Server 3 (Full HD Direct)
               </button>
               <button
-                onClick={() => {
-                  setActiveServer("server4");
-                  setHasError(false);
-                }}
-                className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white font-bold text-xs rounded transition-all border border-neutral-700"
+                onClick={handleDownload}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded transition-all shadow-lg flex items-center gap-1.5 cursor-pointer"
               >
-                Switch to Server 4 (YouTube)
+                <Download size={14} />
+                <span>ভিডিও ডাউনলোড করুন</span>
               </button>
             </div>
           </div>
         ) : currentStreamInfo.isIframe ? (
           /* Render IFRAME player for YouTube or Embed servers */
-          <iframe
-            src={currentStreamInfo.url}
-            title={movie.title}
-            className="w-full h-full border-0"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            allowFullScreen
-          />
+          <div className="relative w-full h-full">
+            <iframe
+              src={currentStreamInfo.url}
+              title={movie.title}
+              className="w-full h-full border-0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+            />
+            {/* Overlay notice for unblocking external window if iframe is blocked by third party */}
+            <div className="absolute top-2 right-2 z-30">
+              <button
+                onClick={handleOpenDirectWatch}
+                className="bg-black/80 hover:bg-red-600 text-white text-[10px] font-bold px-2.5 py-1 rounded border border-neutral-700 hover:border-red-500 flex items-center gap-1 shadow-lg transition-all cursor-pointer"
+                title="Open stream in unblocked external player"
+              >
+                <ExternalLink size={11} />
+                <span>ব্লক দেখালে এখানে ক্লিক করুন (Unblocked Player)</span>
+              </button>
+            </div>
+          </div>
         ) : (
           /* Render Standard HTML5 Video Player */
           <>
@@ -523,7 +674,7 @@ export default function VideoPlayer({
                   {/* Play / Pause toggle */}
                   <button
                     onClick={togglePlay}
-                    className="text-white hover:text-red-500 transition-colors"
+                    className="text-white hover:text-red-500 transition-colors cursor-pointer"
                   >
                     {isPlaying ? <Pause size={18} /> : <Play size={18} className="fill-white" />}
                   </button>
@@ -531,14 +682,14 @@ export default function VideoPlayer({
                   {/* Skip Buttons */}
                   <button
                     onClick={() => skip(-10)}
-                    className="text-neutral-400 hover:text-white transition-colors"
+                    className="text-neutral-400 hover:text-white transition-colors cursor-pointer"
                     title="Rewind 10s"
                   >
                     <RotateCcw size={16} />
                   </button>
                   <button
                     onClick={() => skip(10)}
-                    className="text-neutral-400 hover:text-white transition-colors"
+                    className="text-neutral-400 hover:text-white transition-colors cursor-pointer"
                     title="Forward 10s"
                   >
                     <RotateCw size={16} />
@@ -548,7 +699,7 @@ export default function VideoPlayer({
                   <div className="flex items-center gap-2 group/volume">
                     <button
                       onClick={toggleMute}
-                      className="text-neutral-400 hover:text-white transition-colors"
+                      className="text-neutral-400 hover:text-white transition-colors cursor-pointer"
                     >
                       {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
                     </button>
@@ -581,7 +732,7 @@ export default function VideoPlayer({
                           <button
                             key={rate}
                             onClick={() => handleSpeedChange(rate)}
-                            className={`w-full text-left px-3 py-1.5 hover:bg-neutral-900 transition-colors ${
+                            className={`w-full text-left px-3 py-1.5 hover:bg-neutral-900 transition-colors cursor-pointer ${
                               playbackRate === rate ? "text-red-500 font-bold bg-neutral-900" : "text-neutral-400"
                             }`}
                           >
@@ -595,7 +746,7 @@ export default function VideoPlayer({
                   {/* Maximize / Fullscreen Toggle */}
                   <button
                     onClick={toggleFullscreen}
-                    className="text-neutral-400 hover:text-white transition-colors"
+                    className="text-neutral-400 hover:text-white transition-colors cursor-pointer"
                     title="Toggle Fullscreen"
                   >
                     {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
@@ -606,6 +757,78 @@ export default function VideoPlayer({
           </>
         )}
       </div>
+
+      {/* Download Options Modal */}
+      {showDownloadModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 max-w-md w-full space-y-4 shadow-2xl text-left">
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+              <div className="flex items-center gap-2 text-white font-bold">
+                <Download size={18} className="text-blue-500" />
+                <span>ভিডিও ডাউনলোড অপশন</span>
+              </div>
+              <button
+                onClick={() => setShowDownloadModal(false)}
+                className="text-neutral-400 hover:text-white text-xs font-bold border border-neutral-800 px-2 py-1 rounded"
+              >
+                ✕ Close
+              </button>
+            </div>
+
+            <p className="text-xs text-neutral-300 leading-relaxed">
+              <strong>{movie.title}</strong> ডাউনলোডের জন্য নিচের লিংকে ক্লিক করুন:
+            </p>
+
+            <div className="space-y-2.5">
+              <a
+                href={movie.downloadUrl || movie.videoUrl || currentStreamInfo.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-between p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-xs transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <Film size={14} />
+                  <span>Direct Download Source 1 (HD 1080p)</span>
+                </span>
+                <ExternalLink size={14} />
+              </a>
+
+              {youtubeId && (
+                <a
+                  href={`https://www.youtube.com/watch?v=${youtubeId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-between p-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 text-red-300 rounded-lg font-bold text-xs transition-colors"
+                >
+                  <span className="flex items-center gap-2">
+                    <Download size={14} />
+                    <span>Download via YouTube Source</span>
+                  </span>
+                  <ExternalLink size={14} />
+                </a>
+              )}
+
+              <a
+                href={BACKUP_MP4_POOL[0]}
+                download={`${movie.title}.mp4`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-between p-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-lg font-bold text-xs transition-colors border border-neutral-700"
+              >
+                <span className="flex items-center gap-2">
+                  <Download size={14} className="text-green-400" />
+                  <span>Download Backup MP4 Stream</span>
+                </span>
+                <Download size={14} />
+              </a>
+            </div>
+
+            <p className="text-[10px] text-neutral-500 italic">
+              * নোট: যদি ব্রাউজারে ফাইলটি ওপেন হয়, তবে ভিডিওতে রাইট ক্লিক (Right-Click) করে "Save Video As..." বেছে ডাউনলোড করে নিতে পারবেন।
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Description & Recommendations Section underneath player */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 px-2 select-none">
@@ -633,12 +856,22 @@ export default function VideoPlayer({
             <p className="text-sm text-neutral-300 leading-relaxed">{movie.description}</p>
           </div>
 
-          <div className="bg-neutral-950 border border-neutral-900 p-4 rounded-lg flex items-center justify-between text-xs">
+          <div className="bg-neutral-950 border border-neutral-900 p-4 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs">
             <div className="flex items-center gap-3">
               <div className="h-2 w-2 rounded-full bg-red-600 animate-pulse" />
-              <span className="text-neutral-400 font-semibold">Active Server: <strong className="text-white uppercase">{activeServer}</strong> — Unlimited Bandwidth</span>
+              <span className="text-neutral-400 font-semibold">Active Server: <strong className="text-white uppercase">{activeServer}</strong> — Multi-Bandwidth Stream</span>
             </div>
-            <button onClick={() => { setActiveServer(activeServer === "server1" ? "server3" : "server1"); }} className="text-red-500 font-bold hover:underline">Switch Server</button>
+            <div className="flex items-center gap-2">
+              <button onClick={handleOpenDirectWatch} className="text-emerald-400 font-bold hover:underline flex items-center gap-1">
+                <ExternalLink size={12} />
+                <span>সরাসরি প্লেয়ার</span>
+              </button>
+              <span className="text-neutral-700">|</span>
+              <button onClick={handleDownload} className="text-blue-400 font-bold hover:underline flex items-center gap-1">
+                <Download size={12} />
+                <span>ডাউনলোড</span>
+              </button>
+            </div>
           </div>
         </div>
 
