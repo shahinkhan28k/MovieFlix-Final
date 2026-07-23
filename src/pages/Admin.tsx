@@ -388,8 +388,8 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     viewAnalytics: true,
   });
 
-  // Fetch Firestore users and user_roles collections safely using onSnapshot for efficiency
-  useEffect(() => {
+  // Fetch Firestore users and user_roles collections safely
+  const fetchUserList = useCallback(async () => {
     setIsLoadingUsers(true);
     const usersRef = collection(db, "users");
     const rolesRef = collection(db, "user_roles");
@@ -403,20 +403,18 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
       "shahinkhan28r@gmail.com"
     ];
 
-    // Real-time listener for roles first to build the map
-    let rolesMap = new Map<string, any>();
-    const unsubRoles = onSnapshot(rolesRef, (rolesSnap) => {
-      const newRolesMap = new Map<string, any>();
+    try {
+      // 1. Fetch Roles
+      const rolesSnap = await getDocs(rolesRef);
+      const rolesMap = new Map<string, any>();
       rolesSnap.forEach((roleDoc) => {
         const rData = roleDoc.data();
         const cleanEmail = (rData.email || roleDoc.id).trim().toLowerCase();
-        if (cleanEmail) newRolesMap.set(cleanEmail, rData);
+        if (cleanEmail) rolesMap.set(cleanEmail, rData);
       });
-      rolesMap = newRolesMap;
-    });
 
-    // Real-time listener for users
-    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
+      // 2. Fetch Users
+      const snapshot = await getDocs(usersRef);
       const loadedUsers: UserProfile[] = [];
       const seenEmails = new Set<string>();
       const seenUids = new Set<string>();
@@ -482,17 +480,16 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
       setUserList(loadedUsers);
       setIsLoadingUsers(false);
-    }, (err) => {
-      console.warn("User list snapshot error:", err);
+    } catch (err: any) {
+      console.warn("User list fetch error:", err);
       setIsLoadingUsers(false);
       if (user) setUserList([user]);
-    });
-
-    return () => {
-      unsubRoles();
-      unsubUsers();
-    };
+    }
   }, [user]);
+
+  useEffect(() => {
+    fetchUserList();
+  }, [fetchUserList]);
 
   const handleStartEditUser = (targetUser: UserProfile) => {
     setEditingUserUid(targetUser.uid);
@@ -569,6 +566,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
       triggerNotification("success", `Role saved successfully for ${cleanEmail || targetUid}!`);
       setEditingUserUid(null);
+      await fetchUserList();
     } catch (err: any) {
       console.error("Save role failed:", err);
       triggerNotification("error", `Failed to update role: ${err.message}`);
@@ -640,6 +638,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
       triggerNotification("success", `Role successfully assigned to ${cleanEmail}!`);
       setShowAddUserModal(false);
       setManualUserEmail("");
+      await fetchUserList();
     } catch (err: any) {
       console.error("Manual role assignment failed:", err);
       triggerNotification("error", `Role assignment failed: ${err.message}`);
@@ -7655,7 +7654,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
             <div className="flex items-center gap-2 flex-shrink-0">
               <button
-                onClick={() => {}}
+                onClick={() => fetchUserList()}
                 disabled={isLoadingUsers}
                 className="px-3 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 text-xs font-bold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
                 title="Refresh user list from database"

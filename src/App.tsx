@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
-import { collection, onSnapshot, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc, arrayUnion, arrayRemove } from "firebase/firestore";
+import { collection, onSnapshot, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc, arrayUnion, arrayRemove, query, limit } from "firebase/firestore";
 import { motion, AnimatePresence } from "motion/react";
 import { auth, db } from "./firebase";
 import { Movie, WatchHistoryItem, UserProfile, ThemeSettings, DEFAULT_THEME_SETTINGS, UserRole } from "./types";
@@ -152,11 +152,54 @@ export default function App() {
   // 2. Fetch movies stream catalog from Firestore with fallback for quota limits
   useEffect(() => {
     let isMounted = true;
-    // We don't set isLoading(true) here anymore because we start with local data for instant load
+    
+    const loadMoviesCatalog = async () => {
+      try {
+        const moviesRef = collection(db, "movies");
+        // Limit initial load to 400 items to save quota and prevent lag
+        const q = query(moviesRef, limit(400));
+        const snapshot = await getDocs(q);
+        
+        if (!isMounted) return;
+        const loadedMovies: Movie[] = [];
+        snapshot.forEach((docSnap) => {
+          loadedMovies.push({ id: docSnap.id, ...docSnap.data() } as Movie);
+        });
 
-    const moviesRef = collection(db, "movies");
-    const unsubscribe = onSnapshot(moviesRef, (snapshot) => {
-      if (!isMounted) return;
+        const localMovies = getLocalStorageMovies();
+        const mergedMovies = mergeMovieCatalogs(INITIAL_MOVIES, localMovies, loadedMovies);
+
+        if (mergedMovies.length > 0) {
+          setMovies(mergedMovies);
+          setFeaturedMovie(prev => {
+            if (!prev) return mergedMovies.find((m) => m.featured) || mergedMovies[0];
+            const cloudFeatured = loadedMovies.find(m => m.featured);
+            return cloudFeatured || prev;
+          });
+        }
+        setIsLoading(false);
+      } catch (error: any) {
+        console.warn("Firestore movies fetch notice (offline/local catalog active):", error?.message || error);
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    loadMoviesCatalog();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Helper: Refresh movies from Firestore on demand
+  const handleRefreshMovies = async () => {
+    try {
+      const moviesRef = collection(db, "movies");
+      const q = query(moviesRef, limit(500));
+      const snapshot = await getDocs(q);
+      
       const loadedMovies: Movie[] = [];
       snapshot.forEach((docSnap) => {
         loadedMovies.push({ id: docSnap.id, ...docSnap.data() } as Movie);
@@ -167,31 +210,13 @@ export default function App() {
 
       if (mergedMovies.length > 0) {
         setMovies(mergedMovies);
-        // Only update featured if we don't have one yet or we want to sync with cloud
-        setFeaturedMovie(prev => {
-          if (!prev) return mergedMovies.find((m) => m.featured) || mergedMovies[0];
-          // If the cloud has a featured movie, we might want to prioritize it
-          const cloudFeatured = loadedMovies.find(m => m.featured);
-          return cloudFeatured || prev;
-        });
+        const featured = mergedMovies.find((m) => m.featured) || mergedMovies[0];
+        setFeaturedMovie(featured);
       }
-      setIsLoading(false);
-    }, (error) => {
-      console.warn("Firestore movies listener notice (offline/local catalog active):", error?.message || error);
-      if (isMounted) {
-        setIsLoading(false);
-      }
-    });
-
-    return () => {
-      isMounted = false;
-      unsubscribe();
-    };
-  }, []);
-
-  // Helper: Refresh is now handled by onSnapshot, but keeping signature for compatibility
-  const handleRefreshMovies = async () => {
-    console.log("Refreshing via sync listener...");
+      console.log("Movie catalog refreshed successfully.");
+    } catch (err: any) {
+      console.warn("Refresh movies notice (using current state):", err?.message || err);
+    }
   };
 
   // 3. User Persistence (Cloud Synchronization and Local fallbacks)
