@@ -140,7 +140,7 @@ export default function Home({
               {/* Inject Inter-row AdSense slot after the second category row */}
               {index === 1 && (
                 <div className="px-4 md:px-12 py-2">
-                  <AdSensePlaceholder type="row" />
+                  <AdSensePlaceholder type="in-article" />
                 </div>
               )}
             </React.Fragment>

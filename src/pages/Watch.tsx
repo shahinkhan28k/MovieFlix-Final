@@ -42,6 +42,11 @@ export default function Watch({
             isFavorite={favorites.includes(movie.id)}
             onToggleFavorite={() => onToggleFavorite(movie)}
           />
+
+          {/* In-Article Contextual Ad Unit */}
+          <div className="py-4">
+            <AdSensePlaceholder type="in-article" />
+          </div>
         </div>
 
         {/* Sidebar advertisement & information stats column */}

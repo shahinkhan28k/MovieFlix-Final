@@ -4,7 +4,7 @@ import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "../firebase";
 
 interface AdSensePlaceholderProps {
-  type: "banner" | "sidebar" | "row" | "footer";
+  type: "banner" | "sidebar" | "row" | "footer" | "in-article" | "autorelaxed";
   className?: string;
 }
 
@@ -12,6 +12,11 @@ export default function AdSensePlaceholder({ type, className = "" }: AdSensePlac
   const [isVisible, setIsVisible] = useState(true);
   const [adsConfig, setAdsConfig] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // User's specific AdSense credentials
+  const USER_ADSENSE_CLIENT = "ca-pub-5348967662326700";
+  const USER_ADSENSE_SLOT_IN_ARTICLE = "7514986918";
+  const USER_ADSENSE_SLOT_AUTORELAXED = "9651029817";
 
   // Load AdSense configuration from Firestore
   useEffect(() => {
@@ -21,11 +26,25 @@ export default function AdSensePlaceholder({ type, className = "" }: AdSensePlac
       (docSnap) => {
         if (docSnap.exists()) {
           setAdsConfig(docSnap.data());
+        } else {
+          // If Firestore is empty, we still want to enable ads if we have the client ID
+          setAdsConfig({
+            isEnabled: true,
+            client: USER_ADSENSE_CLIENT,
+            inArticleSlot: USER_ADSENSE_SLOT_IN_ARTICLE,
+            autorelaxedSlot: USER_ADSENSE_SLOT_AUTORELAXED
+          });
         }
         setIsLoading(false);
       },
       (error) => {
-        console.warn("Could not load AdSense config from Firestore, using default placeholders:", error);
+        console.warn("Could not load AdSense config from Firestore, using hardcoded defaults:", error);
+        setAdsConfig({
+          isEnabled: true,
+          client: USER_ADSENSE_CLIENT,
+          inArticleSlot: USER_ADSENSE_SLOT_IN_ARTICLE,
+          autorelaxedSlot: USER_ADSENSE_SLOT_AUTORELAXED
+        });
         setIsLoading(false);
       }
     );
@@ -33,28 +52,32 @@ export default function AdSensePlaceholder({ type, className = "" }: AdSensePlac
     return () => unsubscribe();
   }, []);
 
-  // Dynamically load Google AdSense global script if publisherClient is provided
+  // Dynamically load Google AdSense global script
   useEffect(() => {
-    if (adsConfig?.isEnabled && adsConfig?.client) {
+    const client = adsConfig?.client || USER_ADSENSE_CLIENT;
+    if (adsConfig?.isEnabled && client) {
       const existingScript = document.querySelector(`script[src*="adsbygoogle.js"]`);
       if (!existingScript) {
         const script = document.createElement("script");
         script.async = true;
-        script.src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${adsConfig.client}`;
+        script.src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${client}`;
         script.crossOrigin = "anonymous";
         document.body.appendChild(script);
       }
 
-      // Try pushing adsbygoogle once script loads
-      try {
-        const adsbygoogle = (window as any).adsbygoogle || [];
-        adsbygoogle.push({});
-      } catch (err) {
-        // adsbygoogle can throw if called before ads are ready or if loaded twice
-        console.debug("AdSense push notification error:", err);
-      }
+      // Small delay to ensure the DOM elements for ads are rendered before pushing
+      const timer = setTimeout(() => {
+        try {
+          const adsbygoogle = (window as any).adsbygoogle || [];
+          adsbygoogle.push({});
+        } catch (err) {
+          console.debug("AdSense push notification notice:", err);
+        }
+      }, 500);
+
+      return () => clearTimeout(timer);
     }
-  }, [adsConfig]);
+  }, [adsConfig, type]); // Re-run when type changes to ensure each unit gets a push
 
   if (!isVisible) return null;
 
@@ -66,6 +89,11 @@ export default function AdSensePlaceholder({ type, className = "" }: AdSensePlac
   // Get active Slot ID based on ad type
   const getSlotId = () => {
     if (!adsConfig) return null;
+    
+    // Prioritize user's provided in-article slot if type is in-article
+    if (type === "in-article") return adsConfig.inArticleSlot || USER_ADSENSE_SLOT_IN_ARTICLE;
+    if (type === "autorelaxed") return adsConfig.autorelaxedSlot || USER_ADSENSE_SLOT_AUTORELAXED;
+
     switch (type) {
       case "banner":
         return adsConfig.bannerSlot || null;
@@ -75,14 +103,17 @@ export default function AdSensePlaceholder({ type, className = "" }: AdSensePlac
         return adsConfig.rowSlot || null;
       case "footer":
         return adsConfig.footerSlot || null;
+      default:
+        return null;
     }
   };
 
   const slotId = getSlotId();
+  const client = adsConfig?.client || USER_ADSENSE_CLIENT;
 
   // Get customized sponsor campaign content (fallback/override for ads)
   const getAdContent = () => {
-    const defaults = {
+    const defaults: Record<string, any> = {
       banner: {
         title: "Sponsor: Premium Cinema Setup 4K",
         desc: "Upgrade your home theatre with 40% Off on Dolby Atmos soundbars and OLED screens.",
@@ -111,6 +142,20 @@ export default function AdSensePlaceholder({ type, className = "" }: AdSensePlac
         url: "https://google.com/adsense",
         size: "w-full h-24",
       },
+      "in-article": {
+        title: "Premium Stream Partner",
+        desc: "Get exclusive access to early releases and 4K ultra-HDR streams by supporting our verified partners.",
+        cta: "Explore More",
+        url: "https://google.com/adsense",
+        size: "w-full min-h-[100px]",
+      },
+      "autorelaxed": {
+        title: "Recommended for You",
+        desc: "Discover more premium content and exclusive member-only streams recommended by our cinema community.",
+        cta: "View Content",
+        url: "https://google.com/adsense",
+        size: "w-full min-h-[150px]",
+      }
     };
 
     const typeDefault = defaults[type];
@@ -132,7 +177,7 @@ export default function AdSensePlaceholder({ type, className = "" }: AdSensePlac
   const ad = getAdContent();
 
   // Check if we should render actual Google AdSense tags
-  const shouldRenderRealAd = adsConfig?.isEnabled && adsConfig?.client && slotId;
+  const shouldRenderRealAd = adsConfig?.isEnabled && client && slotId;
 
   return (
     <div
@@ -160,14 +205,33 @@ export default function AdSensePlaceholder({ type, className = "" }: AdSensePlac
       {/* Real AdSense Unit */}
       {shouldRenderRealAd ? (
         <div className="w-full h-full pt-6 flex items-center justify-center overflow-hidden">
-          <ins
-            className="adsbygoogle"
-            style={{ display: "block", width: "100%", height: "100%" }}
-            data-ad-client={adsConfig.client}
-            data-ad-slot={slotId}
-            data-ad-format="auto"
-            data-full-width-responsive="true"
-          />
+          {type === "in-article" ? (
+            <ins
+              className="adsbygoogle"
+              style={{ display: "block", textAlign: "center", width: "100%", height: "100%" }}
+              data-ad-layout="in-article"
+              data-ad-format="fluid"
+              data-ad-client={client}
+              data-ad-slot={slotId}
+            />
+          ) : type === "autorelaxed" ? (
+            <ins
+              className="adsbygoogle"
+              style={{ display: "block", width: "100%", height: "100%" }}
+              data-ad-format="autorelaxed"
+              data-ad-client={client}
+              data-ad-slot={slotId}
+            />
+          ) : (
+            <ins
+              className="adsbygoogle"
+              style={{ display: "block", width: "100%", height: "100%" }}
+              data-ad-client={client}
+              data-ad-slot={slotId}
+              data-ad-format="auto"
+              data-full-width-responsive="true"
+            />
+          )}
         </div>
       ) : (
         /* Custom Direct Campaign (Fallback & Sandbox display) */

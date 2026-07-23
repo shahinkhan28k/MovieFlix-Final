@@ -232,7 +232,7 @@ export default function App() {
                                  cleanEmail === "admin@movieflix.com";
 
       // 1. Setup Real-time Listener (handles initial state too)
-      innerUnsubscribe = onSnapshot(userDocRef, (docSnap) => {
+      innerUnsubscribe = onSnapshot(userDocRef, async (docSnap) => {
         if (docSnap.exists()) {
           const data = docSnap.data();
           setFavorites(data.favorites || []);
@@ -264,15 +264,35 @@ export default function App() {
             }, { merge: true }).catch(() => {});
           }
         } else {
+          // Check if there is a pre-assigned role for this email
+          let assignedRole = "user";
+          let assignedPermissions = {};
+          
+          if (cleanEmail) {
+            try {
+              const { getDoc, doc } = await import("firebase/firestore");
+              const roleRef = doc(db, "user_roles", cleanEmail);
+              const roleSnap = await getDoc(roleRef);
+              if (roleSnap.exists()) {
+                const rData = roleSnap.data();
+                assignedRole = rData.role || "user";
+                assignedPermissions = rData.permissions || {};
+              }
+            } catch (err) {
+              console.warn("Pre-assigned role check skipped:", err);
+            }
+          }
+
           // Create user if missing
           const initialDoc = {
             uid: firebaseUser.uid,
             email: firebaseUser.email,
             displayName: firebaseUser.displayName || firebaseUser.email?.split("@")[0] || "User",
             photoURL: firebaseUser.photoURL,
-            role: isSuperAdminEmail ? "admin" : "user",
-            isAdmin: isSuperAdminEmail,
-            isModerator: false,
+            role: isSuperAdminEmail ? "admin" : assignedRole,
+            isAdmin: isSuperAdminEmail || assignedRole === "admin",
+            isModerator: assignedRole === "moderator",
+            permissions: assignedPermissions,
             favorites: [],
             watchHistory: [],
             createdAt: new Date().toISOString(),
@@ -572,6 +592,13 @@ export default function App() {
           )}
         </AnimatePresence>
       </main>
+
+      {/* Global Auto-Relaxed Recommendation Ad Unit */}
+      <div className="px-4 md:px-12 py-8 bg-neutral-950">
+        <div className="max-w-7xl mx-auto">
+          <AdSensePlaceholder type="autorelaxed" />
+        </div>
+      </div>
 
       {/* 3. Global Netflix-style Footer */}
       <Footer />

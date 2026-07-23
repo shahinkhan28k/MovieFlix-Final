@@ -388,8 +388,8 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     viewAnalytics: true,
   });
 
-  // Fetch Firestore users and user_roles collections safely
-  const fetchUserList = useCallback(async () => {
+  // Real-time synchronization for users and roles
+  useEffect(() => {
     setIsLoadingUsers(true);
     const usersRef = collection(db, "users");
     const rolesRef = collection(db, "user_roles");
@@ -403,59 +403,50 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
       "shahinkhan28r@gmail.com"
     ];
 
-    try {
-      // 1. Fetch Roles
-      const rolesSnap = await getDocs(rolesRef);
-      const rolesMap = new Map<string, any>();
+    // Listener for roles
+    let rolesMap = new Map<string, any>();
+    const unsubRoles = onSnapshot(rolesRef, (rolesSnap) => {
+      const newRolesMap = new Map<string, any>();
       rolesSnap.forEach((roleDoc) => {
         const rData = roleDoc.data();
         const cleanEmail = (rData.email || roleDoc.id).trim().toLowerCase();
-        if (cleanEmail) rolesMap.set(cleanEmail, rData);
+        if (cleanEmail) newRolesMap.set(cleanEmail, rData);
       });
+      rolesMap = newRolesMap;
+      
+      // Trigger a re-sync of the user list if roles change
+      syncLoadedUsers();
+    }, (err) => {
+      console.warn("Roles snapshot error:", err);
+    });
 
-      // 2. Fetch Users
-      const snapshot = await getDocs(usersRef);
-      const loadedUsers: UserProfile[] = [];
-      const seenEmails = new Set<string>();
-      const seenUids = new Set<string>();
-
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        const uid = docSnap.id;
-        const email = data.email ? data.email.trim().toLowerCase() : null;
-        if (email) seenEmails.add(email);
-        seenUids.add(uid);
-
-        const isSuperAdmin = email ? superAdminEmails.includes(email) : false;
+    let currentUsers: UserProfile[] = [];
+    const syncLoadedUsers = () => {
+      const processedUsers = currentUsers.map(u => {
+        const email = u.email?.trim().toLowerCase();
         const preAssigned = email ? rolesMap.get(email) : null;
-        let role: UserRole = isSuperAdmin ? "admin" : (data.role || preAssigned?.role || "user");
-        if (data.isAdmin || preAssigned?.isAdmin) role = "admin";
-        else if (data.isModerator || preAssigned?.isModerator) role = "moderator";
+        const isSuperAdmin = email ? superAdminEmails.includes(email) : false;
+        
+        let role: UserRole = isSuperAdmin ? "admin" : (u.role || preAssigned?.role || "user");
+        if (u.isAdmin || preAssigned?.isAdmin) role = "admin";
+        else if (u.isModerator || preAssigned?.isModerator) role = "moderator";
 
-        loadedUsers.push({
-          uid: uid,
-          email: data.email || email,
-          displayName: data.displayName || (email ? email.split("@")[0] : "Registered User"),
-          photoURL: data.photoURL || null,
-          role: role,
-          permissions: data.permissions || preAssigned?.permissions || {
-            manageMovies: true,
-            importMovies: true,
-            manageAds: false,
-            viewAnalytics: true,
-          },
+        return {
+          ...u,
+          role,
           isAdmin: role === "admin" || isSuperAdmin,
           isModerator: role === "moderator",
-          createdAt: data.createdAt || data.updatedAt || new Date().toISOString(),
-        });
+          permissions: u.permissions || preAssigned?.permissions || u.permissions
+        };
       });
 
-      // Add users from roles that aren't in the users collection yet
+      // Add pseudo-users from roles
+      const seenEmails = new Set(processedUsers.map(u => u.email?.toLowerCase()).filter(Boolean));
       rolesMap.forEach((rData, cleanEmail) => {
         if (!seenEmails.has(cleanEmail)) {
           const isSuperAdmin = superAdminEmails.includes(cleanEmail);
           const role: UserRole = isSuperAdmin ? "admin" : (rData.role || "user");
-          loadedUsers.push({
+          processedUsers.push({
             uid: `assigned-${cleanEmail}`,
             email: cleanEmail,
             displayName: cleanEmail.split("@")[0],
@@ -474,22 +465,48 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         }
       });
 
-      if (user && !seenUids.has(user.uid) && !loadedUsers.some(u => (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()))) {
-        loadedUsers.unshift(user);
-      }
+      setUserList(processedUsers);
+    };
 
-      setUserList(loadedUsers);
+    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
+      const loaded: UserProfile[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        const uid = docSnap.id;
+        const email = data.email ? data.email.trim().toLowerCase() : null;
+        const isSuperAdmin = email ? superAdminEmails.includes(email) : false;
+        
+        loaded.push({
+          uid: uid,
+          email: data.email || email,
+          displayName: data.displayName || (email ? email.split("@")[0] : "User"),
+          photoURL: data.photoURL || null,
+          role: data.role || (isSuperAdmin ? "admin" : "user"),
+          permissions: data.permissions || {},
+          isAdmin: data.role === "admin" || isSuperAdmin || data.isAdmin,
+          isModerator: data.role === "moderator" || data.isModerator,
+          createdAt: data.createdAt || data.updatedAt || new Date().toISOString(),
+        });
+      });
+      currentUsers = loaded;
+      syncLoadedUsers();
       setIsLoadingUsers(false);
-    } catch (err: any) {
-      console.warn("User list fetch error:", err);
+    }, (err) => {
+      console.warn("Users snapshot error:", err);
       setIsLoadingUsers(false);
-      if (user) setUserList([user]);
-    }
-  }, [user]);
+    });
 
-  useEffect(() => {
-    fetchUserList();
-  }, [fetchUserList]);
+    return () => {
+      unsubRoles();
+      unsubUsers();
+    };
+  }, []);
+
+  // Removed fetchUserList manual function in favor of real-time onSnapshot
+  const fetchUserList = () => {
+    // Keep signature for UI buttons if needed
+    console.log("Using real-time listeners for user list.");
+  };
 
   const handleStartEditUser = (targetUser: UserProfile) => {
     setEditingUserUid(targetUser.uid);
@@ -1274,15 +1291,17 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
             await new Promise(resolve => setTimeout(resolve, 500));
           }
 
-          // Instantly save to local storage catalog as a safety fallback
+          // Instantly save to local storage catalog as a safety fallback (Once per page)
           saveMoviesToLocalStorage(stagedDocs);
 
           try {
             await batch.commit();
             setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🌍 Global Sync: ${stagedInBatch} movies pushed to Cloud Firestore.`]);
+            // Refresh movies in current admin view instantly
+            await onRefreshMovies();
           } catch (bErr: any) {
-            console.warn("Firestore auto-bulk batch commit notice (saved locally):", bErr?.message || bErr);
-            setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ Cloud Sync Notice: Batch saved locally (Firestore offline or quota limit).`]);
+            console.warn("Firestore auto-bulk batch commit error:", bErr?.message || bErr);
+            setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ❌ Cloud Sync Error: ${bErr.message || "Quota limit or connection issue"}.`]);
           }
 
           setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✅ Auto-Bulk completed page ${pageTracker} (Total Session: ${totalImportedInSession})`]);
