@@ -7,6 +7,80 @@ export const IMG_BASE = "https://image.tmdb.org/t/p/w300";
 export const IMG_BASE_LG = "https://image.tmdb.org/t/p/w780";
 export const OMDB_API_KEY = "5a8f6331";
 
+// RapidAPI Configurations
+const RAPID_KEY = (import.meta as any).env.VITE_RAPIDAPI_KEY || "8b1758872fmsh7f1643ac807820dp1d52a3jsn85ab31e30f7d";
+const RAPID_HOST_IMDB = (import.meta as any).env.VITE_RAPIDAPI_HOST_IMDB || "imdb236.p.rapidapi.com";
+
+export async function rapidGenericFetch(host: string, endpoint: string) {
+  const url = endpoint.startsWith("http") ? endpoint : `https://${host}${endpoint}`;
+  const options = {
+    method: "GET",
+    headers: {
+      "x-rapidapi-key": RAPID_KEY,
+      "x-rapidapi-host": host
+    }
+  };
+
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const error: any = new Error(`RapidAPI Error (${host}): ${res.status}`);
+    error.status = res.status;
+    error.host = host;
+    throw error;
+  }
+  return res.json();
+}
+
+export async function rapidImdbFetch(endpoint: string) {
+  return rapidGenericFetch(RAPID_HOST_IMDB, endpoint);
+}
+
+export async function getCastTitles(nmId: string) {
+  return rapidImdbFetch(`/api/imdb/cast/${nmId}/titles`);
+}
+
+export async function fetchNetflixRapid(name = "robot", page = 1) {
+  const host = (import.meta as any).env.VITE_RAPIDAPI_HOST_NETFLIX || "netflix-movies-and-tv-shows-api-by-apirobots.p.rapidapi.com";
+  return rapidGenericFetch(host, `/v1/netflix?name=${encodeURIComponent(name)}&page=${page}`);
+}
+
+export async function fetchDisneyRapid() {
+  const host = (import.meta as any).env.VITE_RAPIDAPI_HOST_DISNEY || "disney-plus-top-movies-and-tv-shows-api-by-apirobots.p.rapidapi.com";
+  return rapidGenericFetch(host, `/v1/disney-plus-top/random`);
+}
+
+export async function fetchAmazonRapid(page = 1) {
+  const host = (import.meta as any).env.VITE_RAPIDAPI_HOST_AMAZON || "amazon-prime-movies-and-tv-shows-api-by-apirobots.p.rapidapi.com";
+  return rapidGenericFetch(host, `/v1/amazon-prime?page=${page}`);
+}
+
+export async function fetchBollywoodRapid(year = 2024, genre = "Action") {
+  const host = (import.meta as any).env.VITE_RAPIDAPI_HOST_BOLLYWOOD || "abir82-bollywood-recommendations.p.rapidapi.com";
+  return rapidGenericFetch(host, `/?year=${year}&genre=${encodeURIComponent(genre)}`);
+}
+
+export async function fetchMoviesDbRapid(id: string | number) {
+  const host = (import.meta as any).env.VITE_RAPIDAPI_HOST_MOVIESDB || "movies-db-api1.p.rapidapi.com";
+  return rapidGenericFetch(host, `/movies/lookup/${id}`);
+}
+
+export async function fetchHollywoodRapid() {
+  const host = (import.meta as any).env.VITE_RAPIDAPI_HOST_MOVIESERIES || "movieseries.p.rapidapi.com";
+  return rapidGenericFetch(host, `/hollywood`);
+}
+
+export async function tmdbFindById(externalId: string, source = "imdb_id") {
+  return tmdbFetch(`/find/${externalId}?external_source=${source}`);
+}
+
+export async function tmdbGetMovie(id: number | string) {
+  return tmdbFetch(`/movie/${id}`);
+}
+
+export async function tmdbGetTv(id: number | string) {
+  return tmdbFetch(`/tv/${id}`);
+}
+
 export async function tmdbFetch(path: string) {
   const sep = path.includes("?") ? "&" : "?";
   let keyToUse = TMDB_KEY;

@@ -47,7 +47,28 @@ import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { INITIAL_MOVIES, CATEGORIES } from "../data/mockMovies";
 import { generateBulkMovies } from "../data/importerTemplates";
 import { saveMoviesToLocalStorage, removeMovieFromLocalStorage, clearAllLocalMovies } from "../lib/movieStorage";
-import { TMDB_KEY, EMBED_API_KEY, EMBED_BASE, IMG_BASE, IMG_BASE_LG, movieEmbedUrl, tvEmbedUrl, posterUrl, formatRating, mapTmdbToMovieDoc, api as tmdbApi } from "../lib/api";
+import { 
+  TMDB_KEY, 
+  EMBED_API_KEY, 
+  EMBED_BASE, 
+  IMG_BASE, 
+  IMG_BASE_LG, 
+  movieEmbedUrl, 
+  tvEmbedUrl, 
+  posterUrl, 
+  formatRating, 
+  mapTmdbToMovieDoc, 
+  api as tmdbApi,
+  getCastTitles,
+  tmdbFindById,
+  tmdbGetMovie,
+  tmdbGetTv,
+  fetchNetflixRapid,
+  fetchDisneyRapid,
+  fetchAmazonRapid,
+  fetchBollywoodRapid,
+  fetchHollywoodRapid
+} from "../lib/api";
 
 interface AdminProps {
   movies: Movie[];
@@ -56,7 +77,20 @@ interface AdminProps {
 }
 
 export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
-  const [activeTab, setActiveTab] = useState<"list" | "add" | "analytics" | "users" | "theme" | "tmdb" | "adsense" | "omdb" | "freemoviedb" | "moviebox" | "dejavu" | "archive" | "pexels_pixabay" | "vimeo" | "dailymotion" | "youtube" | "skymovieshd">("list");
+  const [activeTab, setActiveTab] = useState<"list" | "add" | "analytics" | "users" | "theme" | "tmdb" | "adsense" | "omdb" | "freemoviedb" | "moviebox" | "dejavu" | "archive" | "pexels_pixabay" | "vimeo" | "dailymotion" | "youtube" | "skymovieshd" | "rapidimdb" | "auto_rapid">("list");
+
+  // Auto-Rapid Importer States
+  const [isAutoRapidRunning, setIsAutoRapidRunning] = useState(false);
+  const autoRapidRef = useRef(false);
+  const [autoRapidLogs, setAutoRapidLogs] = useState<string[]>([]);
+  const [autoRapidSuccessCount, setAutoRapidSuccessCount] = useState(0);
+  const [autoRapidProvider, setAutoRapidProvider] = useState<"all" | "netflix" | "disney" | "amazon" | "bollywood" | "hollywood">("all");
+
+  // RapidAPI IMDb States
+  const [rapidImdbNmId, setRapidImdbNmId] = useState("nm0000190");
+  const [rapidImdbResults, setRapidImdbResults] = useState<any[]>([]);
+  const [isFetchingRapidImdb, setIsFetchingRapidImdb] = useState(false);
+  const [selectedRapidIds, setSelectedRapidIds] = useState<string[]>([]);
 
   
   // TMDB Importer States
@@ -1556,6 +1590,199 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
       triggerNotification("error", `Import Failed: ${err.message}`);
     } finally {
       setIsImportingOmdb(false);
+    }
+  };
+
+  const fetchFromRapidImdb = async () => {
+    if (!rapidImdbNmId.trim()) {
+      triggerNotification("error", "Please provide a Cast NM-ID (e.g. nm0000190)");
+      return;
+    }
+    setIsFetchingRapidImdb(true);
+    setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Fetching titles for ${rapidImdbNmId} from RapidAPI IMDb...`]);
+    try {
+      const data = await getCastTitles(rapidImdbNmId.trim());
+      // Expecting results in data.titles or similar based on RapidAPI response structure
+      // For this specific API nmId/titles, it returns a list of title objects
+      const results = data || [];
+      setRapidImdbResults(results);
+      setSelectedRapidIds(results.map((r: any) => r.id || r.tconst));
+      setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Successfully fetched ${results.length} titles from RapidAPI.`]);
+      triggerNotification("success", `Fetched ${results.length} titles successfully.`);
+    } catch (err: any) {
+      console.error("RapidAPI Fetch Error:", err);
+      setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] RapidAPI Error: ${err.message || err}`]);
+      triggerNotification("error", `RapidAPI Fetch Failed: ${err.message}`);
+    } finally {
+      setIsFetchingRapidImdb(false);
+    }
+  };
+
+  const importSelectedRapidToFirestore = async () => {
+    if (selectedRapidIds.length === 0) {
+      triggerNotification("error", "Please select titles to import.");
+      return;
+    }
+    setIsImporting(true);
+    setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Cross-referencing ${selectedRapidIds.length} IMDb IDs with TMDB for metadata...`]);
+    let successCount = 0;
+
+    try {
+      const batch = writeBatch(db);
+
+      for (const id of selectedRapidIds) {
+        try {
+          // 1. Find TMDB ID from IMDb ID
+          const findData = await tmdbFindById(id);
+          const movieMatch = findData.movie_results?.[0];
+          const tvMatch = findData.tv_results?.[0];
+          const match = movieMatch || tvMatch;
+
+          if (match) {
+            // 2. Map to Movie Doc
+            const movieDoc = mapTmdbToMovieDoc(match, !!tvMatch);
+            
+            // 3. Optional Archive.org matching
+            const archiveMatch = await fetchArchiveMatchingVideo(movieDoc.title);
+            if (archiveMatch) {
+              movieDoc.videoUrl = archiveMatch.videoUrl;
+              movieDoc.embedUrl = archiveMatch.embedUrl || movieDoc.embedUrl;
+            }
+
+            const docRef = doc(db, "movies", movieDoc.id);
+            batch.set(docRef, movieDoc, { merge: true });
+            saveMoviesToLocalStorage(movieDoc);
+            successCount++;
+            setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Staged: "${movieDoc.title}" (${id})`]);
+          } else {
+            setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Skip: ${id} (No TMDB match found)`]);
+          }
+        } catch (e) {
+          console.warn(`Rapid Import match error for ${id}:`, e);
+        }
+        // Throttling
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      await batch.commit();
+      setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Success! Imported ${successCount} items via RapidAPI bridge.`]);
+      triggerNotification("success", `Successfully imported ${successCount} items!`);
+      await onRefreshMovies();
+    } catch (err: any) {
+      console.error("Rapid Firestore Import Error:", err);
+      triggerNotification("error", `Import failed: ${err.message}`);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleToggleAutoRapid = () => {
+    const newState = !isAutoRapidRunning;
+    setIsAutoRapidRunning(newState);
+    autoRapidRef.current = newState;
+    if (newState) {
+      setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🚀 Auto-Rapid Importer Started (${autoRapidProvider}).`]);
+      runAutoRapidCycle();
+    } else {
+      setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🛑 Auto-Rapid Importer Stopped.`]);
+    }
+  };
+
+  const runAutoRapidCycle = async () => {
+    if (!autoRapidRef.current) return;
+
+    try {
+      const providers: ("netflix" | "disney" | "amazon" | "bollywood" | "hollywood")[] = 
+        autoRapidProvider === "all" ? ["netflix", "disney", "amazon", "bollywood", "hollywood"] : [autoRapidProvider];
+      
+      const currentProvider = providers[Math.floor(Math.random() * providers.length)];
+      setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🛰️ Polling ${currentProvider.toUpperCase()} feed...`]);
+
+      let results: any[] = [];
+      let page = Math.floor(Math.random() * 10) + 1;
+
+      try {
+        switch (currentProvider) {
+          case "netflix":
+            const nData = await fetchNetflixRapid("movie", page);
+            results = nData || [];
+            break;
+          case "disney":
+            const dData = await fetchDisneyRapid();
+            results = Array.isArray(dData) ? dData : [dData];
+            break;
+          case "amazon":
+            const aData = await fetchAmazonRapid(page);
+            results = aData || [];
+            break;
+          case "bollywood":
+            const bData = await fetchBollywoodRapid(2023 + Math.floor(Math.random() * 2), "Action");
+            results = bData || [];
+            break;
+          case "hollywood":
+            const hData = await fetchHollywoodRapid();
+            results = hData || [];
+            break;
+        }
+      } catch (providerErr: any) {
+        if (providerErr.status === 403) {
+          setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🚫 ${currentProvider.toUpperCase()} is locked (403). Skipping source.`]);
+        } else if (providerErr.status === 502) {
+          setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🧱 ${currentProvider.toUpperCase()} is down (502). Retrying in next cycle.`]);
+        } else {
+          setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ ${currentProvider.toUpperCase()} error: ${providerErr.message}`]);
+        }
+      }
+
+      if (results.length > 0) {
+        setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 📦 Found ${results.length} titles. Cross-referencing metadata...`]);
+        
+        let batchCount = 0;
+        const batch = writeBatch(db);
+
+        for (const item of results.slice(0, 5)) { // Process in small batches of 5
+          if (!autoRapidRef.current) break;
+          
+          try {
+            const title = item.title || item.name || item.originalTitle || item.Movie_Name;
+            if (!title) continue;
+
+            // Try to find on TMDB
+            const searchData = await tmdbApi.searchMovies(title);
+            const match = searchData.results?.[0];
+
+            if (match) {
+              const movieDoc = mapTmdbToMovieDoc(match);
+              const docRef = doc(db, "movies", movieDoc.id);
+              batch.set(docRef, movieDoc, { merge: true });
+              saveMoviesToLocalStorage(movieDoc);
+              batchCount++;
+              setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✅ Auto-Imported: "${movieDoc.title}"`]);
+            }
+          } catch (e) {
+            console.warn("Auto-Rapid item error:", e);
+          }
+          await new Promise(r => setTimeout(r, 500)); // Throttling
+        }
+
+        if (batchCount > 0) {
+          await batch.commit();
+          setAutoRapidSuccessCount(prev => prev + batchCount);
+          await onRefreshMovies();
+        }
+      } else {
+        setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ No results from ${currentProvider}. Retrying in next cycle.`]);
+      }
+
+    } catch (err: any) {
+      console.error("Auto-Rapid Cycle Error:", err);
+      setAutoRapidLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ❌ Error: ${err.message || "Network issue"}`]);
+    }
+
+    // Schedule next cycle if still running
+    if (autoRapidRef.current) {
+      const waitTime = 10000 + Math.random() * 20000; // 10-30 seconds
+      setTimeout(runAutoRapidCycle, waitTime);
     }
   };
 
@@ -3735,6 +3962,28 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
               </span>
             </button>
             <button
+              onClick={() => setActiveTab("auto_rapid")}
+              className={`px-4 py-2 font-bold transition-all cursor-pointer border-b-2 ${
+                activeTab === "auto_rapid" ? "text-white border-red-600" : "text-neutral-500 border-transparent hover:text-neutral-300"
+              }`}
+            >
+              <span className="flex items-center gap-1.5">
+                <RefreshCw size={13} className={isAutoRapidRunning ? "text-green-500 animate-spin" : "text-red-500"} />
+                <span>Auto-Rapid Pilot</span>
+              </span>
+            </button>
+            <button
+              onClick={() => setActiveTab("rapidimdb")}
+              className={`px-4 py-2 font-bold transition-all cursor-pointer border-b-2 ${
+                activeTab === "rapidimdb" ? "text-white border-red-600" : "text-neutral-500 border-transparent hover:text-neutral-300"
+              }`}
+            >
+              <span className="flex items-center gap-1.5">
+                <Database size={13} className="text-red-500" />
+                <span>IMDb RapidAPI</span>
+              </span>
+            </button>
+            <button
               onClick={() => setActiveTab("freemoviedb")}
               className={`px-4 py-2 font-bold transition-all cursor-pointer border-b-2 ${
                 activeTab === "freemoviedb" ? "text-white border-red-600" : "text-neutral-500 border-transparent hover:text-neutral-300"
@@ -4768,6 +5017,198 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "auto_rapid" && (
+        <div className="space-y-6">
+          <div className="bg-neutral-950 border border-neutral-900 rounded-lg p-8">
+            <div className="max-w-3xl mx-auto text-center space-y-6">
+              <div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center transition-all ${
+                isAutoRapidRunning ? "bg-green-500/20 text-green-500 animate-pulse" : "bg-red-500/20 text-red-500"
+              }`}>
+                <RefreshCw size={40} className={isAutoRapidRunning ? "animate-spin" : ""} />
+              </div>
+              
+              <div className="space-y-2">
+                <h3 className="text-2xl font-black text-white">Auto-Pilot Importer</h3>
+                <p className="text-sm text-neutral-400">
+                  When enabled, the system will automatically scan Netflix, Disney+, Amazon, and Bollywood feeds to import new movies directly into your database.
+                </p>
+              </div>
+
+              <div className="flex flex-col items-center gap-4 py-4">
+                <div className="flex items-center gap-3 bg-neutral-900 p-1.5 rounded-full border border-neutral-800">
+                  {(["all", "netflix", "disney", "amazon", "bollywood", "hollywood"] as const).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => setAutoRapidProvider(p)}
+                      className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all ${
+                        autoRapidProvider === p ? "bg-red-600 text-white shadow-lg" : "text-neutral-500 hover:text-neutral-300"
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  onClick={handleToggleAutoRapid}
+                  className={`px-12 py-4 rounded-full font-black text-sm transition-all shadow-2xl flex items-center gap-3 ${
+                    isAutoRapidRunning 
+                      ? "bg-neutral-800 text-red-500 border border-red-500/50 hover:bg-neutral-700" 
+                      : "bg-red-600 text-white hover:bg-red-700 hover:scale-105"
+                  }`}
+                >
+                  {isAutoRapidRunning ? (
+                    <>
+                      <X size={18} />
+                      <span>STOP AUTO-PILOT</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play size={18} />
+                      <span>START AUTO-PILOT</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 py-6 border-y border-neutral-900">
+                <div className="text-center">
+                  <div className="text-3xl font-black text-white">{autoRapidSuccessCount}</div>
+                  <div className="text-[10px] text-neutral-500 font-bold uppercase tracking-wider">Movies Imported</div>
+                </div>
+                <div className="text-center">
+                  <div className={`text-3xl font-black ${isAutoRapidRunning ? "text-green-500" : "text-neutral-600"}`}>
+                    {isAutoRapidRunning ? "ACTIVE" : "IDLE"}
+                  </div>
+                  <div className="text-[10px] text-neutral-500 font-bold uppercase tracking-wider">Status</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-neutral-950 border border-neutral-900 rounded-lg overflow-hidden flex flex-col h-[400px]">
+             <div className="p-4 border-b border-neutral-900 flex items-center justify-between bg-neutral-900/20">
+                <h4 className="text-xs font-black text-white flex items-center gap-2">
+                  <Sliders size={14} className="text-red-500" />
+                  <span>Auto-Pilot Activity Logs</span>
+                </h4>
+                <button 
+                  onClick={() => setAutoRapidLogs([])}
+                  className="text-[10px] text-neutral-500 hover:text-white"
+                >
+                  Clear Logs
+                </button>
+             </div>
+             
+             <div className="flex-1 overflow-y-auto p-4 space-y-1 font-mono text-[10px] scrollbar-thin bg-black/50">
+                {autoRapidLogs.map((log, idx) => (
+                  <div key={idx} className="py-1 border-b border-neutral-900/30 text-neutral-400">
+                    {log}
+                  </div>
+                ))}
+                {autoRapidLogs.length === 0 && (
+                  <div className="h-full flex items-center justify-center text-neutral-600 italic">
+                    Waiting for activity logs...
+                  </div>
+                )}
+                <div ref={(el) => el?.scrollIntoView({ behavior: "smooth" })} />
+             </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "rapidimdb" && (
+        <div className="space-y-6">
+          <div className="bg-neutral-950 border border-neutral-900 rounded-lg p-6">
+            <h3 className="text-base font-black text-white mb-4 flex items-center gap-2">
+              <Database size={16} className="text-red-500" />
+              <span>IMDb RapidAPI Cast Importer</span>
+            </h3>
+            <p className="text-xs text-neutral-400 mb-6 leading-relaxed">
+              Import movies directly from IMDb based on Cast Member IDs. This uses RapidAPI to fetch titles and cross-references them with TMDB for full metadata and streaming player integration.
+            </p>
+            <div className="flex flex-col md:flex-row gap-4 items-end">
+              <div className="flex-1 space-y-2">
+                <label className="text-xs text-neutral-300 font-bold block">Actor/Cast NM-ID</label>
+                <input
+                  type="text"
+                  placeholder="e.g. nm0000190"
+                  value={rapidImdbNmId}
+                  onChange={(e) => setRapidImdbNmId(e.target.value)}
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded px-3 py-2.5 text-white focus:outline-none focus:border-red-600 font-mono text-xs"
+                />
+              </div>
+              <button
+                onClick={fetchFromRapidImdb}
+                disabled={isFetchingRapidImdb}
+                className="px-6 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold rounded text-xs transition-all flex items-center gap-2 h-[38px]"
+              >
+                {isFetchingRapidImdb ? <RefreshCw size={14} className="animate-spin" /> : <Search size={14} />}
+                <span>Fetch Titles</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-neutral-950 border border-neutral-900 rounded-lg overflow-hidden flex flex-col h-[600px]">
+             <div className="p-4 border-b border-neutral-900 flex items-center justify-between bg-neutral-900/20">
+                <h4 className="text-xs font-black text-white flex items-center gap-2">
+                  <Film size={14} className="text-red-500" />
+                  <span>RapidAPI Results ({rapidImdbResults.length})</span>
+                </h4>
+                {rapidImdbResults.length > 0 && (
+                  <button
+                    onClick={importSelectedRapidToFirestore}
+                    disabled={isImporting || selectedRapidIds.length === 0}
+                    className="px-4 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-bold rounded text-[10px] transition-all flex items-center gap-2"
+                  >
+                    {isImporting ? <RefreshCw size={12} className="animate-spin" /> : <Plus size={12} />}
+                    <span>Import Selected ({selectedRapidIds.length})</span>
+                  </button>
+                )}
+             </div>
+             
+             <div className="flex-1 overflow-y-auto p-4 space-y-2 scrollbar-thin">
+                {rapidImdbResults.map((item: any) => {
+                  const id = item.id || item.tconst;
+                  const isChecked = selectedRapidIds.includes(id);
+                  return (
+                    <div 
+                      key={id}
+                      onClick={() => {
+                        setSelectedRapidIds(prev => 
+                          prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+                        );
+                      }}
+                      className={`flex items-center gap-4 p-3 rounded-lg border cursor-pointer transition-all ${
+                        isChecked ? "bg-red-950/10 border-red-900/50" : "bg-neutral-900/30 border-neutral-800 hover:border-neutral-700"
+                      }`}
+                    >
+                      <div className="flex-shrink-0">
+                        {isChecked ? <CheckSquare size={16} className="text-red-500" /> : <Square size={16} className="text-neutral-700" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-white truncate">{item.title || item.originalTitle || "Unknown Title"}</span>
+                          {item.year && <span className="text-[10px] text-neutral-500">({item.year})</span>}
+                        </div>
+                        <div className="text-[10px] text-neutral-500 font-mono mt-0.5">{id} • {item.titleType || "Movie"}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {rapidImdbResults.length === 0 && !isFetchingRapidImdb && (
+                  <div className="h-full flex flex-col items-center justify-center text-center opacity-40 py-20">
+                    <Database size={40} className="mb-4" />
+                    <p className="text-xs font-bold">No RapidAPI results to display.</p>
+                    <p className="text-[10px] mt-1">Enter a Cast NM-ID and fetch titles to get started.</p>
+                  </div>
+                )}
+             </div>
           </div>
         </div>
       )}
