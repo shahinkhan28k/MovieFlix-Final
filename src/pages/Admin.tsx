@@ -366,116 +366,110 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
   });
 
   // Fetch Firestore users and user_roles collections safely
-  useEffect(() => {
-    let isMounted = true;
+  const fetchUserList = useCallback(async () => {
     setIsLoadingUsers(true);
     const usersRef = collection(db, "users");
     const rolesRef = collection(db, "user_roles");
+    let loadedUsersMap = new Map<string, UserProfile>();
 
-    const fetchUserList = async () => {
-      let loadedUsersMap = new Map<string, UserProfile>();
+    const superAdminEmails = [
+      "admin@movieflix.com",
+      "djskshahin544@gmail.com",
+      "shahinkhan28qqqq@gmail.com",
+      "shahinkhan28ddd@gmail.com"
+    ];
 
-      const superAdminEmails = [
-        "admin@movieflix.com",
-        "djskshahin544@gmail.com",
-        "shahinkhan28qqqq@gmail.com",
-        "shahinkhan28ddd@gmail.com"
-      ];
+    try {
+      const rolesSnap = await getDocs(rolesRef);
+      rolesSnap.forEach((roleDoc) => {
+        const rData = roleDoc.data();
+        const cleanEmail = (rData.email || roleDoc.id).trim().toLowerCase();
+        if (!cleanEmail) return;
 
-      try {
-        const rolesSnap = await getDocs(rolesRef);
-        rolesSnap.forEach((roleDoc) => {
-          const rData = roleDoc.data();
-          const cleanEmail = (rData.email || roleDoc.id).trim().toLowerCase();
-          if (!cleanEmail) return;
+        const isSuperAdmin = superAdminEmails.includes(cleanEmail);
+        const role: UserRole = isSuperAdmin ? "admin" : (rData.role || "user");
 
-          const isSuperAdmin = superAdminEmails.includes(cleanEmail);
-          const role: UserRole = isSuperAdmin ? "admin" : (rData.role || "user");
-
-          loadedUsersMap.set(cleanEmail, {
-            uid: `assigned-${cleanEmail}`,
-            email: cleanEmail,
-            displayName: cleanEmail.split("@")[0],
-            photoURL: null,
-            role: role,
-            permissions: rData.permissions || {
-              manageMovies: true,
-              importMovies: true,
-              manageAds: false,
-              viewAnalytics: true,
-            },
-            isAdmin: role === "admin" || isSuperAdmin,
-            isModerator: role === "moderator",
-            createdAt: rData.updatedAt || new Date().toISOString(),
-          });
+        loadedUsersMap.set(cleanEmail, {
+          uid: `assigned-${cleanEmail}`,
+          email: cleanEmail,
+          displayName: cleanEmail.split("@")[0],
+          photoURL: null,
+          role: role,
+          permissions: rData.permissions || {
+            manageMovies: true,
+            importMovies: true,
+            manageAds: false,
+            viewAnalytics: true,
+          },
+          isAdmin: role === "admin" || isSuperAdmin,
+          isModerator: role === "moderator",
+          createdAt: rData.updatedAt || new Date().toISOString(),
         });
-      } catch (err: any) {
-        console.warn("Could not fetch user_roles:", err?.message || err);
+      });
+    } catch (err: any) {
+      console.warn("Could not fetch user_roles:", err?.message || err);
+    }
+
+    try {
+      const snapshot = await getDocs(usersRef);
+
+      const loadedUsers: UserProfile[] = [];
+      const seenEmails = new Set<string>();
+
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        const uid = docSnap.id;
+        const email = data.email ? data.email.trim().toLowerCase() : null;
+        if (email) seenEmails.add(email);
+
+        const isSuperAdmin = email ? superAdminEmails.includes(email) : false;
+        const preAssigned = email ? loadedUsersMap.get(email) : null;
+        let role: UserRole = isSuperAdmin ? "admin" : (data.role || preAssigned?.role || "user");
+        if (data.isAdmin || preAssigned?.isAdmin) role = "admin";
+        else if (data.isModerator || preAssigned?.isModerator) role = "moderator";
+
+        loadedUsers.push({
+          uid: uid,
+          email: data.email || email,
+          displayName: data.displayName || (email ? email.split("@")[0] : "Registered User"),
+          photoURL: data.photoURL || null,
+          role: role,
+          permissions: data.permissions || preAssigned?.permissions || {
+            manageMovies: true,
+            importMovies: true,
+            manageAds: false,
+            viewAnalytics: true,
+          },
+          isAdmin: role === "admin" || isSuperAdmin,
+          isModerator: role === "moderator",
+          createdAt: data.createdAt || data.updatedAt || new Date().toISOString(),
+        });
+      });
+
+      loadedUsersMap.forEach((assignedUser, cleanEmail) => {
+        if (!seenEmails.has(cleanEmail)) {
+          loadedUsers.push(assignedUser);
+        }
+      });
+
+      if (user && !loadedUsers.some(u => u.uid === user.uid || (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()))) {
+        loadedUsers.unshift(user);
       }
 
-      try {
-        const snapshot = await getDocs(usersRef);
-        if (!isMounted) return;
-
-        const loadedUsers: UserProfile[] = [];
-        const seenEmails = new Set<string>();
-
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          const uid = docSnap.id;
-          const email = data.email ? data.email.trim().toLowerCase() : null;
-          if (email) seenEmails.add(email);
-
-          const isSuperAdmin = email ? superAdminEmails.includes(email) : false;
-          const preAssigned = email ? loadedUsersMap.get(email) : null;
-          let role: UserRole = isSuperAdmin ? "admin" : (data.role || preAssigned?.role || "user");
-          if (data.isAdmin || preAssigned?.isAdmin) role = "admin";
-
-          loadedUsers.push({
-            uid: uid,
-            email: data.email || email,
-            displayName: data.displayName || null,
-            photoURL: data.photoURL || null,
-            role: role,
-            permissions: data.permissions || preAssigned?.permissions || {
-              manageMovies: true,
-              importMovies: true,
-              manageAds: false,
-              viewAnalytics: true,
-            },
-            isAdmin: role === "admin" || isSuperAdmin,
-            isModerator: role === "moderator",
-            createdAt: data.createdAt || data.updatedAt || new Date().toISOString(),
-          });
-        });
-
-        loadedUsersMap.forEach((assignedUser, cleanEmail) => {
-          if (!seenEmails.has(cleanEmail)) {
-            loadedUsers.push(assignedUser);
-          }
-        });
-
-        if (user && !loadedUsers.some(u => u.uid === user.uid || (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()))) {
-          loadedUsers.unshift(user);
-        }
-
-        setUserList(loadedUsers);
-      } catch (err: any) {
-        console.warn("Could not fetch user list from Firestore:", err?.message || err);
-        if (user && isMounted) {
-          setUserList([user]);
-        }
-      } finally {
-        if (isMounted) setIsLoadingUsers(false);
+      setUserList(loadedUsers);
+    } catch (err: any) {
+      console.warn("Could not fetch user list from Firestore:", err?.message || err);
+      if (user) {
+        setUserList([user]);
       }
-    };
+    } finally {
+      setIsLoadingUsers(false);
+    }
+  }, [user]);
 
+  useEffect(() => {
     fetchUserList();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [user?.uid]);
+  }, [fetchUserList]);
 
   const handleStartEditUser = (targetUser: UserProfile) => {
     setEditingUserUid(targetUser.uid);
@@ -491,17 +485,18 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
   const handleSaveUserRole = async (targetUid: string, email: string | null) => {
     setIsSavingUserRole(true);
     try {
-      const isSuperAdmin = email ? [
+      const cleanEmail = email ? email.trim().toLowerCase() : "";
+      const isSuperAdmin = cleanEmail ? [
         "admin@movieflix.com",
         "djskshahin544@gmail.com",
         "shahinkhan28qqqq@gmail.com",
         "shahinkhan28ddd@gmail.com"
-      ].includes(email.trim().toLowerCase()) : false;
+      ].includes(cleanEmail) : false;
       
       const newRole = isSuperAdmin ? "admin" : editingRole;
       const permissionsToSave = newRole === "moderator" ? editingPermissions : {};
 
-      if (!targetUid.startsWith("assigned-")) {
+      if (targetUid && !targetUid.startsWith("assigned-")) {
         const userRef = doc(db, "users", targetUid);
         await setDoc(userRef, {
           role: newRole,
@@ -512,8 +507,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         }, { merge: true });
       }
 
-      if (email) {
-        const cleanEmail = email.trim().toLowerCase();
+      if (cleanEmail) {
         const roleRef = doc(db, "user_roles", cleanEmail);
         await setDoc(roleRef, {
           email: cleanEmail,
@@ -524,11 +518,11 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
           updatedAt: new Date().toISOString()
         }, { merge: true });
 
-        // Also update pseudo doc if present
         const pseudoUid = `user-${cleanEmail.replace(/[^a-z0-9]/g, "_")}`;
         const pseudoRef = doc(db, "users", pseudoUid);
         await setDoc(pseudoRef, {
           email: cleanEmail,
+          displayName: cleanEmail.split("@")[0],
           role: newRole,
           permissions: permissionsToSave,
           isAdmin: newRole === "admin",
@@ -537,8 +531,22 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         }, { merge: true }).catch(() => {});
       }
 
-      triggerNotification("success", `User role & permissions saved for ${email || targetUid}`);
+      setUserList(prev => prev.map(u => {
+        if (u.uid === targetUid || (cleanEmail && u.email?.toLowerCase() === cleanEmail)) {
+          return {
+            ...u,
+            role: newRole,
+            isAdmin: newRole === "admin",
+            isModerator: newRole === "moderator",
+            permissions: permissionsToSave,
+          };
+        }
+        return u;
+      }));
+
+      triggerNotification("success", `Role saved successfully for ${cleanEmail || targetUid}!`);
       setEditingUserUid(null);
+      await fetchUserList();
     } catch (err: any) {
       console.error("Save role failed:", err);
       triggerNotification("error", `Failed to update role: ${err.message}`);
@@ -593,9 +601,24 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         updatedAt: new Date().toISOString()
       }, { merge: true });
 
+      setUserList(prev => [
+        {
+          uid: targetUid,
+          email: cleanEmail,
+          displayName: existing?.displayName || cleanEmail.split("@")[0],
+          role: finalRole,
+          isAdmin: finalRole === "admin",
+          isModerator: finalRole === "moderator",
+          permissions: finalPermissions,
+          createdAt: new Date().toISOString()
+        },
+        ...prev.filter(u => u.email?.toLowerCase() !== cleanEmail && u.uid !== targetUid)
+      ]);
+
       triggerNotification("success", `Role successfully assigned to ${cleanEmail}!`);
       setShowAddUserModal(false);
       setManualUserEmail("");
+      await fetchUserList();
     } catch (err: any) {
       console.error("Manual role assignment failed:", err);
       triggerNotification("error", `Role assignment failed: ${err.message}`);
@@ -7587,13 +7610,25 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
               </p>
             </div>
 
-            <button
-              onClick={() => setShowAddUserModal(true)}
-              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-all shadow-lg cursor-pointer flex-shrink-0"
-            >
-              <UserPlus size={15} />
-              <span>Assign Role to Email</span>
-            </button>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                onClick={() => fetchUserList()}
+                disabled={isLoadingUsers}
+                className="px-3 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 text-xs font-bold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                title="Refresh user list from database"
+              >
+                <RefreshCw size={14} className={isLoadingUsers ? "animate-spin" : ""} />
+                <span>Refresh List</span>
+              </button>
+
+              <button
+                onClick={() => setShowAddUserModal(true)}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-all shadow-lg cursor-pointer"
+              >
+                <UserPlus size={15} />
+                <span>Assign Role to Email</span>
+              </button>
+            </div>
           </div>
 
           {/* Search & Role Filter Bar */}

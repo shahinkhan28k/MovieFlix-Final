@@ -34,10 +34,13 @@ service cloud.firestore {
         isSuperAdmin() ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
          (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin" ||
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true)) ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "moderator" ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true)) ||
         (request.auth.token.email != null && 
          exists(/databases/$(database)/documents/user_roles/$(request.auth.token.email)) && 
-         get(/databases/$(database)/documents/user_roles/$(request.auth.token.email)).data.role == "admin")
+         (get(/databases/$(database)/documents/user_roles/$(request.auth.token.email)).data.role == "admin" ||
+          get(/databases/$(database)/documents/user_roles/$(request.auth.token.email)).data.role == "moderator"))
       ); 
     }
 
@@ -46,10 +49,8 @@ service cloud.firestore {
       // Public read access is required so standard visitors can load the catalog on mount
       allow read: if true;
       
-      // Writes are restricted exclusively to verified admin
-      allow create: if isAdmin() && isValidMovie(request.resource.data);
-      allow update: if isAdmin() && isValidMovie(request.resource.data);
-      allow delete: if isAdmin();
+      // Writes are restricted exclusively to verified admin and moderators
+      allow create, update, delete: if isAdmin();
     }
 
     // Settings Collection Security (AdSense & App Configuration)
