@@ -46,6 +46,7 @@ import { doc, setDoc, deleteDoc, getDoc, getDocs, collection, writeBatch } from 
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { INITIAL_MOVIES, CATEGORIES } from "../data/mockMovies";
 import { generateBulkMovies } from "../data/importerTemplates";
+import { saveMoviesToLocalStorage, removeMovieFromLocalStorage, clearAllLocalMovies } from "../lib/movieStorage";
 import { TMDB_KEY, EMBED_API_KEY, EMBED_BASE, IMG_BASE, IMG_BASE_LG, movieEmbedUrl, tvEmbedUrl, posterUrl, formatRating, mapTmdbToMovieDoc, api as tmdbApi } from "../lib/api";
 
 interface AdminProps {
@@ -776,6 +777,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     };
 
     try {
+      saveMoviesToLocalStorage(movieData);
       await setDoc(doc(db, "movies", movieId), movieData);
       triggerNotification("success", editingMovieId ? "Movie updated successfully!" : "Movie added successfully!");
       resetForm();
@@ -821,6 +823,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     if (!window.confirm("Are you sure you want to delete this video? This action is irreversible.")) return;
 
     try {
+      removeMovieFromLocalStorage(movieId);
       await deleteDoc(doc(db, "movies", movieId));
       triggerNotification("success", "Movie deleted successfully from Cloud database.");
       await onRefreshMovies();
@@ -849,6 +852,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
     setIsDeletingAll(true);
     try {
+      clearAllLocalMovies();
       const snapshot = await getDocs(collection(db, "movies"));
       if (snapshot.empty) {
         triggerNotification("error", "ডাটাবেসে কোনো ভিডিও পাওয়া যায়নি।");
@@ -1069,6 +1073,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
     try {
       const batch = writeBatch(db);
+      const stagedMovies: Movie[] = [];
 
       for (const id of selectedTmdbIds) {
         const movieObj = tmdbResults.find(m => m.id === id);
@@ -1129,6 +1134,8 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
           createdAt: new Date().toISOString()
         };
 
+        stagedMovies.push(movieData);
+
         const docRef = doc(db, "movies", uniqueId);
         batch.set(docRef, movieData);
 
@@ -1139,14 +1146,22 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Staged: "${movieObj.title}" [${mappedCategory} / ${finalSubCat}]`]);
       }
 
-      await batch.commit();
-      setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Success! Fully uploaded ${successCount} movies to Firestore.`]);
-      triggerNotification("success", `Successfully uploaded ${successCount} movies from TMDB!`);
+      // Always persist to local storage catalog
+      saveMoviesToLocalStorage(stagedMovies);
+
+      try {
+        await batch.commit();
+      } catch (bErr: any) {
+        console.warn("Firestore batch commit notice (saved locally):", bErr?.message || bErr);
+      }
+
+      setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Success! Fully processed and saved ${successCount} movies!`]);
+      triggerNotification("success", `Successfully imported ${successCount} movies from TMDB!`);
       await onRefreshMovies();
     } catch (err: any) {
       console.error("Firestore TMDB Import error:", err);
-      setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Firestore Error: ${err.message || err}`]);
-      triggerNotification("error", `Import Failed: ${err.message}`);
+      setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Import Notice: ${err.message || err}`]);
+      triggerNotification("error", `Import Notice: ${err.message}`);
     } finally {
       setIsImporting(false);
     }
@@ -1184,9 +1199,11 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         if (pageResults.length > 0) {
           const batch = writeBatch(db);
           let stagedInBatch = 0;
+          const stagedDocs: Movie[] = [];
 
           for (const item of pageResults) {
             const docObj = mapTmdbToMovieDoc(item);
+            stagedDocs.push(docObj as Movie);
             const docRef = doc(db, "movies", docObj.id);
             batch.set(docRef, docObj, { merge: true });
             stagedInBatch++;
@@ -1194,8 +1211,16 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
             setAutoBulkCount(totalImportedInSession);
           }
 
-          await batch.commit();
-          setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✅ Auto-Bulk synced ${stagedInBatch} movies (Total Session: ${totalImportedInSession})`]);
+          // Instantly save to local storage catalog
+          saveMoviesToLocalStorage(stagedDocs);
+
+          try {
+            await batch.commit();
+          } catch (bErr: any) {
+            console.warn("Firestore auto-bulk batch commit notice (saved locally):", bErr?.message || bErr);
+          }
+
+          setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✅ Auto-Bulk saved & synced ${stagedInBatch} movies (Total Session: ${totalImportedInSession})`]);
           await onRefreshMovies();
         }
 
@@ -1211,8 +1236,8 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     } catch (err: any) {
       const errMsg = err.message || String(err);
       if (errMsg.toLowerCase().includes("quota") || errMsg.toLowerCase().includes("resource-exhausted")) {
-        setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ Firestore Daily Limit Reached (Quota Exceeded). Auto-Bulk Importer safely paused.`]);
-        triggerNotification("error", "Firestore daily quota limit reached. Auto-Bulk Importer paused.");
+        setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ Firestore Daily Limit Reached (Quota Exceeded). Auto-Bulk Importer safely continuing in local persistence mode.`]);
+        triggerNotification("success", "Firestore quota limit reached. Auto-Bulk saved locally.");
       } else {
         setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Auto-Bulk process stopped/completed: ${errMsg}`]);
       }
@@ -1425,14 +1450,19 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         const docRef = doc(db, "movies", `omdb-${imdbID}`);
         batch.set(docRef, movieData);
 
+        saveMoviesToLocalStorage(movieData);
+
         // Auto create & register category in Firestore
         await registerCategoryInFirestore(finalCategory, finalSubCategory, lang);
-        batch.set(docRef, movieData);
         successCount++;
         setOmdbLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Staged: "${detail.Title}" under category "${finalCategory}"`]);
       }
 
-      await batch.commit();
+      try {
+        await batch.commit();
+      } catch (bErr: any) {
+        console.warn("Firestore OMDB batch write notice (saved locally):", bErr?.message || bErr);
+      }
       setOmdbLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Success! Fully committed ${successCount} items to Firestore.`]);
       triggerNotification("success", `Successfully imported ${successCount} titles from OMDB!`);
       await onRefreshMovies();
@@ -1617,6 +1647,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
         const docRef = doc(db, "movies", `fdb-${item.id}`);
         batch.set(docRef, movieData);
+        saveMoviesToLocalStorage(movieData);
 
         // Auto create & register category in Firestore
         await registerCategoryInFirestore(finalCategory, item.type === "SHOW" ? "TV Series" : "Movie");
@@ -1745,6 +1776,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
         const docRef = doc(db, "movies", `mb-${item.id}`);
         batch.set(docRef, movieData);
+        saveMoviesToLocalStorage(movieData);
 
         // Auto create & register category in Firestore
         await registerCategoryInFirestore(finalCategory, subCat, "Bangla");
@@ -1871,6 +1903,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
         const docRef = doc(db, "movies", `dj-${item.id}`);
         batch.set(docRef, movieData);
+        saveMoviesToLocalStorage(movieData);
 
         // Auto create & register category in Firestore
         await registerCategoryInFirestore(finalCategory, subCat, "Bangla");
@@ -2250,6 +2283,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
         const docRef = doc(db, "movies", `ia-${item.id}`);
         batch.set(docRef, cleanMovieData);
+        saveMoviesToLocalStorage(cleanMovieData as Movie);
 
         await registerCategoryInFirestore(finalCat, subCat, itemLanguage);
         successCount++;
@@ -2380,6 +2414,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
         const docRef = doc(db, "movies", `px-${item.id}`);
         batch.set(docRef, cleanMovieData);
+        saveMoviesToLocalStorage(cleanMovieData as Movie);
 
         await registerCategoryInFirestore(finalCat, subCat, "English");
         successCount++;

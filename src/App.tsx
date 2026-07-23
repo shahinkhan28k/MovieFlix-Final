@@ -4,6 +4,7 @@ import { collection, onSnapshot, getDocs, doc, getDoc, setDoc, deleteDoc, update
 import { auth, db } from "./firebase";
 import { Movie, WatchHistoryItem, UserProfile, ThemeSettings, DEFAULT_THEME_SETTINGS, UserRole } from "./types";
 import { INITIAL_MOVIES } from "./data/mockMovies";
+import { getLocalStorageMovies, mergeMovieCatalogs } from "./lib/movieStorage";
 
 // Component imports
 import Navbar from "./components/Navbar";
@@ -156,19 +157,22 @@ export default function App() {
           loadedMovies.push({ id: docSnap.id, ...docSnap.data() } as Movie);
         });
 
-        if (loadedMovies.length > 0) {
-          setMovies(loadedMovies);
-          const featured = loadedMovies.find((m) => m.featured) || loadedMovies[0];
+        const localMovies = getLocalStorageMovies();
+        const mergedMovies = mergeMovieCatalogs(INITIAL_MOVIES, localMovies, loadedMovies);
+
+        if (mergedMovies.length > 0) {
+          setMovies(mergedMovies);
+          const featured = mergedMovies.find((m) => m.featured) || mergedMovies[0];
           setFeaturedMovie(featured);
-        } else {
-          setMovies(INITIAL_MOVIES);
-          setFeaturedMovie(INITIAL_MOVIES[0]);
         }
       } catch (error: any) {
-        console.warn("Firestore movies catalog fetch notice (offline mode active):", error?.message || error);
+        console.warn("Firestore movies catalog fetch notice (offline/local catalog active):", error?.message || error);
         if (isMounted) {
-          setMovies((prev) => (prev.length > 0 ? prev : INITIAL_MOVIES));
-          setFeaturedMovie((prev) => (prev ? prev : INITIAL_MOVIES[0]));
+          const localMovies = getLocalStorageMovies();
+          const mergedMovies = mergeMovieCatalogs(INITIAL_MOVIES, localMovies);
+          setMovies(mergedMovies);
+          const featured = mergedMovies.find((m) => m.featured) || mergedMovies[0];
+          setFeaturedMovie(featured);
         }
       } finally {
         if (isMounted) setIsLoading(false);
@@ -182,7 +186,7 @@ export default function App() {
     };
   }, []);
 
-  // Helper: Force reload movie list from firestore
+  // Helper: Force reload movie list from local storage & firestore
   const handleRefreshMovies = async () => {
     try {
       const moviesRef = collection(db, "movies");
@@ -191,17 +195,20 @@ export default function App() {
       snapshot.forEach((docSnap) => {
         loadedMovies.push({ id: docSnap.id, ...docSnap.data() } as Movie);
       });
-      if (loadedMovies.length > 0) {
-        setMovies(loadedMovies);
-        const featured = loadedMovies.find((m) => m.featured) || loadedMovies[0];
+      const localMovies = getLocalStorageMovies();
+      const mergedMovies = mergeMovieCatalogs(INITIAL_MOVIES, localMovies, loadedMovies);
+      if (mergedMovies.length > 0) {
+        setMovies(mergedMovies);
+        const featured = mergedMovies.find((m) => m.featured) || mergedMovies[0];
         setFeaturedMovie(featured);
       }
     } catch (err: any) {
-      console.warn("Refresh movies notice (using cached catalog):", err?.message || err);
-      if (movies.length === 0) {
-        setMovies(INITIAL_MOVIES);
-        setFeaturedMovie(INITIAL_MOVIES[0]);
-      }
+      console.warn("Refresh movies notice (using local catalog):", err?.message || err);
+      const localMovies = getLocalStorageMovies();
+      const mergedMovies = mergeMovieCatalogs(INITIAL_MOVIES, localMovies);
+      setMovies(mergedMovies);
+      const featured = mergedMovies.find((m) => m.featured) || mergedMovies[0];
+      setFeaturedMovie(featured);
     }
   };
 

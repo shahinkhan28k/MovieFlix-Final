@@ -83,7 +83,7 @@ export default function VideoPlayer({
   const [activeServer, setActiveServer] = useState<"server1" | "server2" | "server3" | "server4" | "server5" | "server6" | "server7">("server1");
   const [ytProxyEngine, setYtProxyEngine] = useState<"nocookie" | "invidious" | "piped">("nocookie");
   const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
-  const [adBlockShield, setAdBlockShield] = useState<boolean>(true);
+  const [adBlockShield, setAdBlockShield] = useState<boolean>(false);
 
   // Extract YouTube Video ID if present
   const youtubeId = useMemo(() => {
@@ -697,7 +697,7 @@ export default function VideoPlayer({
               className="w-full h-full border-0"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
               allowFullScreen
-              sandbox={adBlockShield ? "allow-scripts allow-same-origin allow-forms allow-presentation" : undefined}
+              sandbox={adBlockShield && activeServer !== "server1" ? "allow-scripts allow-same-origin allow-forms allow-presentation allow-popups allow-modals" : undefined}
             />
             {/* Overlay toolbar for unblocking and quick server switching if embed fails or shows ads */}
             <div className="absolute top-2 right-2 z-30 flex items-center gap-1.5 flex-wrap">
