@@ -140,15 +140,17 @@ export default function App() {
     };
   }, []);
 
-  // 2. Fetch movies stream catalog from Firestore in real-time
+  // 2. Fetch movies stream catalog from Firestore with fallback for quota limits
   useEffect(() => {
+    let isMounted = true;
     setIsLoading(true);
-    const moviesRef = collection(db, "movies");
 
-    // Real-time listener
-    const unsubscribe = onSnapshot(
-      moviesRef,
-      (snapshot) => {
+    const loadMoviesCatalog = async () => {
+      try {
+        const moviesRef = collection(db, "movies");
+        const snapshot = await getDocs(moviesRef);
+        if (!isMounted) return;
+
         const loadedMovies: Movie[] = [];
         snapshot.forEach((docSnap) => {
           loadedMovies.push({ id: docSnap.id, ...docSnap.data() } as Movie);
@@ -156,26 +158,28 @@ export default function App() {
 
         if (loadedMovies.length > 0) {
           setMovies(loadedMovies);
-          // Set featured banner
           const featured = loadedMovies.find((m) => m.featured) || loadedMovies[0];
           setFeaturedMovie(featured);
         } else {
-          // If Firestore is completely empty, default to INITIAL_MOVIES catalog as fallback
           setMovies(INITIAL_MOVIES);
           setFeaturedMovie(INITIAL_MOVIES[0]);
         }
-        setIsLoading(false);
-      },
-      (error: any) => {
-        console.warn("Firestore movies subscription notice (fallback mode):", error?.message || error);
-        // Offline or quota exceeded fallback: ensure movies list is populated
-        setMovies((prev) => (prev.length > 0 ? prev : INITIAL_MOVIES));
-        setFeaturedMovie((prev) => (prev ? prev : INITIAL_MOVIES[0]));
-        setIsLoading(false);
+      } catch (error: any) {
+        console.warn("Firestore movies catalog fetch notice (offline mode active):", error?.message || error);
+        if (isMounted) {
+          setMovies((prev) => (prev.length > 0 ? prev : INITIAL_MOVIES));
+          setFeaturedMovie((prev) => (prev ? prev : INITIAL_MOVIES[0]));
+        }
+      } finally {
+        if (isMounted) setIsLoading(false);
       }
-    );
+    };
 
-    return () => unsubscribe();
+    loadMoviesCatalog();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // Helper: Force reload movie list from firestore
@@ -212,103 +216,110 @@ export default function App() {
                                  cleanEmail === "shahinkhan28ddd@gmail.com" || 
                                  cleanEmail === "admin@movieflix.com";
 
-      const setupUserListener = (assignedData: any = null) => {
-        innerUnsubscribe = onSnapshot(
-          userDocRef,
-          (docSnap) => {
-            if (docSnap.exists()) {
-              const data = docSnap.data();
-              setFavorites(data.favorites || []);
-              setWatchHistory(data.watchHistory || []);
+      const setupUserListener = async (assignedData: any = null) => {
+        try {
+          const docSnap = await getDoc(userDocRef);
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setFavorites(data.favorites || []);
+            setWatchHistory(data.watchHistory || []);
 
-              // Determine role & permissions from super admin email OR user_roles collection OR user doc
-              let role = "user";
-              let permissions = {};
+            let role = "user";
+            let permissions = {};
 
-              if (isSuperAdminEmail) {
-                role = "admin";
-              } else if (assignedData?.role && assignedData.role !== "user") {
-                role = assignedData.role;
-                permissions = assignedData.permissions || {};
-              } else if (data.role && data.role !== "user") {
-                role = data.role;
-                permissions = data.permissions || {};
-              }
+            if (isSuperAdminEmail) {
+              role = "admin";
+            } else if (assignedData?.role && assignedData.role !== "user") {
+              role = assignedData.role;
+              permissions = assignedData.permissions || {};
+            } else if (data.role && data.role !== "user") {
+              role = data.role;
+              permissions = data.permissions || {};
+            }
 
-              const isAdmin = role === "admin" || isSuperAdminEmail;
-              const isModerator = role === "moderator";
+            const isAdmin = role === "admin" || isSuperAdminEmail;
+            const isModerator = role === "moderator";
 
-              setUser({
-                uid: firebaseUser.uid,
+            setUser({
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              displayName: firebaseUser.displayName || data.displayName,
+              photoURL: firebaseUser.photoURL || data.photoURL,
+              role: role as UserRole,
+              permissions: permissions,
+              isAdmin: isAdmin,
+              isModerator: isModerator,
+            });
+
+            if (!data.email || !data.role || (isSuperAdminEmail && data.role !== "admin")) {
+              setDoc(userDocRef, {
                 email: firebaseUser.email,
-                displayName: firebaseUser.displayName || data.displayName,
+                displayName: firebaseUser.displayName || data.displayName || firebaseUser.email?.split("@")[0],
                 photoURL: firebaseUser.photoURL || data.photoURL,
-                role: role as UserRole,
-                permissions: permissions,
+                role: role,
                 isAdmin: isAdmin,
                 isModerator: isModerator,
-              });
-
-              // Only update user document if essential fields are missing
-              if (!data.email || !data.role || (isSuperAdminEmail && data.role !== "admin")) {
-                setDoc(userDocRef, {
-                  email: firebaseUser.email,
-                  displayName: firebaseUser.displayName || data.displayName || firebaseUser.email?.split("@")[0],
-                  photoURL: firebaseUser.photoURL || data.photoURL,
-                  role: role,
-                  isAdmin: isAdmin,
-                  isModerator: isModerator,
-                  permissions: permissions,
-                }, { merge: true }).catch((err) => console.warn("Failed to sync user meta:", err));
-              }
-            } else {
-              // Set initial user structure in Cloud
-              let defaultRole = "user";
-              let defaultPermissions = {};
-
-              if (isSuperAdminEmail) {
-                defaultRole = "admin";
-              } else if (assignedData?.role && assignedData.role !== "user") {
-                defaultRole = assignedData.role;
-                defaultPermissions = assignedData.permissions || {};
-              }
-
-              const initialDoc = {
-                email: firebaseUser.email,
-                displayName: firebaseUser.displayName || firebaseUser.email?.split("@")[0],
-                photoURL: firebaseUser.photoURL,
-                role: defaultRole,
-                isAdmin: defaultRole === "admin" || isSuperAdminEmail,
-                isModerator: defaultRole === "moderator",
-                permissions: defaultPermissions,
-                favorites: [],
-                watchHistory: [],
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-              };
-
-              setDoc(userDocRef, initialDoc).catch((err) => {
-                console.warn("Could not create user document in cloud:", err);
-              });
-
-              setUser({
-                uid: firebaseUser.uid,
-                email: firebaseUser.email,
-                displayName: firebaseUser.displayName || firebaseUser.email?.split("@")[0],
-                photoURL: firebaseUser.photoURL,
-                role: defaultRole as UserRole,
-                permissions: defaultPermissions,
-                isAdmin: defaultRole === "admin" || isSuperAdminEmail,
-                isModerator: defaultRole === "moderator",
-              });
-              setFavorites([]);
-              setWatchHistory([]);
+                permissions: permissions,
+              }, { merge: true }).catch((err) => console.warn("Failed to sync user meta:", err));
             }
-          },
-          (err) => {
-            console.warn("Could not listen to user doc:", err);
+          } else {
+            let defaultRole = "user";
+            let defaultPermissions = {};
+
+            if (isSuperAdminEmail) {
+              defaultRole = "admin";
+            } else if (assignedData?.role && assignedData.role !== "user") {
+              defaultRole = assignedData.role;
+              defaultPermissions = assignedData.permissions || {};
+            }
+
+            const initialDoc = {
+              email: firebaseUser.email,
+              displayName: firebaseUser.displayName || firebaseUser.email?.split("@")[0],
+              photoURL: firebaseUser.photoURL,
+              role: defaultRole,
+              isAdmin: defaultRole === "admin" || isSuperAdminEmail,
+              isModerator: defaultRole === "moderator",
+              permissions: defaultPermissions,
+              favorites: [],
+              watchHistory: [],
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+
+            setDoc(userDocRef, initialDoc).catch((err) => {
+              console.warn("Could not create user document in cloud:", err);
+            });
+
+            setUser({
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              displayName: firebaseUser.displayName || firebaseUser.email?.split("@")[0],
+              photoURL: firebaseUser.photoURL,
+              role: defaultRole as UserRole,
+              permissions: defaultPermissions,
+              isAdmin: defaultRole === "admin" || isSuperAdminEmail,
+              isModerator: defaultRole === "moderator",
+            });
+            setFavorites([]);
+            setWatchHistory([]);
           }
-        );
+        } catch (err: any) {
+          console.warn("User doc fetch notice (using local profile):", err?.message || err);
+          let defaultRole = isSuperAdminEmail ? "admin" : (assignedData?.role || "user");
+          let defaultPermissions = assignedData?.permissions || {};
+          setUser({
+            uid: firebaseUser.uid,
+            email: firebaseUser.email,
+            displayName: firebaseUser.displayName || firebaseUser.email?.split("@")[0],
+            photoURL: firebaseUser.photoURL,
+            role: defaultRole as UserRole,
+            permissions: defaultPermissions,
+            isAdmin: defaultRole === "admin" || isSuperAdminEmail,
+            isModerator: defaultRole === "moderator",
+          });
+          loadLocalStorageData();
+        }
       };
 
       if (cleanEmail) {

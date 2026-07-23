@@ -42,7 +42,7 @@ import {
 } from "lucide-react";
 import { Movie, UserProfile, ModeratorPermissions, UserRole, ThemeSettings, DEFAULT_THEME_SETTINGS, SiteThemeId, SiteMode, ScreenLayoutMode } from "../types";
 import { db, storage } from "../firebase";
-import { doc, setDoc, deleteDoc, getDocs, collection, writeBatch, onSnapshot } from "firebase/firestore";
+import { doc, setDoc, deleteDoc, getDoc, getDocs, collection, writeBatch } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { INITIAL_MOVIES, CATEGORIES } from "../data/mockMovies";
 import { generateBulkMovies } from "../data/importerTemplates";
@@ -276,21 +276,28 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
   // Load existing Theme settings from Firestore when component mounts
   useEffect(() => {
+    let isMounted = true;
     const docRef = doc(db, "settings", "theme");
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data() as ThemeSettings;
-        setSiteThemeId(data.themeId || "netflix");
-        setSiteMode(data.mode || "dark");
-        setIsDarkOn(data.darkOn !== false);
-        setAccentColor(data.accentColor || "red");
-        setScreenLayoutMode(data.screenLayoutMode || "standard");
-        setEnableGlassmorphism(data.enableGlassmorphism !== false);
-        setEnableGlowEffects(data.enableGlowEffects !== false);
-        setAllowUserThemeToggle(data.allowUserThemeToggle !== false);
-      }
-    });
-    return () => unsubscribe();
+    getDoc(docRef)
+      .then((docSnap) => {
+        if (isMounted && docSnap.exists()) {
+          const data = docSnap.data() as ThemeSettings;
+          setSiteThemeId(data.themeId || "netflix");
+          setSiteMode(data.mode || "dark");
+          setIsDarkOn(data.darkOn !== false);
+          setAccentColor(data.accentColor || "red");
+          setScreenLayoutMode(data.screenLayoutMode || "standard");
+          setEnableGlassmorphism(data.enableGlassmorphism !== false);
+          setEnableGlowEffects(data.enableGlowEffects !== false);
+          setAllowUserThemeToggle(data.allowUserThemeToggle !== false);
+        }
+      })
+      .catch((err) => {
+        console.warn("Theme settings fetch notice:", err?.message || err);
+      });
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const handleSaveTheme = async (overrides?: Partial<ThemeSettings>) => {
@@ -357,53 +364,58 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     viewAnalytics: true,
   });
 
-  // Real-time listener for Firestore users and user_roles collections
+  // Fetch Firestore users and user_roles collections safely
   useEffect(() => {
+    let isMounted = true;
     setIsLoadingUsers(true);
     const usersRef = collection(db, "users");
     const rolesRef = collection(db, "user_roles");
 
-    let loadedUsersMap = new Map<string, UserProfile>();
+    const fetchUserList = async () => {
+      let loadedUsersMap = new Map<string, UserProfile>();
 
-    const superAdminEmails = [
-      "admin@movieflix.com",
-      "djskshahin544@gmail.com",
-      "shahinkhan28qqqq@gmail.com",
-      "shahinkhan28ddd@gmail.com"
-    ];
+      const superAdminEmails = [
+        "admin@movieflix.com",
+        "djskshahin544@gmail.com",
+        "shahinkhan28qqqq@gmail.com",
+        "shahinkhan28ddd@gmail.com"
+      ];
 
-    // Fetch user_roles pre-assignments
-    getDocs(rolesRef).then((rolesSnap) => {
-      rolesSnap.forEach((roleDoc) => {
-        const rData = roleDoc.data();
-        const cleanEmail = (rData.email || roleDoc.id).trim().toLowerCase();
-        if (!cleanEmail) return;
+      try {
+        const rolesSnap = await getDocs(rolesRef);
+        rolesSnap.forEach((roleDoc) => {
+          const rData = roleDoc.data();
+          const cleanEmail = (rData.email || roleDoc.id).trim().toLowerCase();
+          if (!cleanEmail) return;
 
-        const isSuperAdmin = superAdminEmails.includes(cleanEmail);
-        const role: UserRole = isSuperAdmin ? "admin" : (rData.role || "user");
+          const isSuperAdmin = superAdminEmails.includes(cleanEmail);
+          const role: UserRole = isSuperAdmin ? "admin" : (rData.role || "user");
 
-        loadedUsersMap.set(cleanEmail, {
-          uid: `assigned-${cleanEmail}`,
-          email: cleanEmail,
-          displayName: cleanEmail.split("@")[0],
-          photoURL: null,
-          role: role,
-          permissions: rData.permissions || {
-            manageMovies: true,
-            importMovies: true,
-            manageAds: false,
-            viewAnalytics: true,
-          },
-          isAdmin: role === "admin" || isSuperAdmin,
-          isModerator: role === "moderator",
-          createdAt: rData.updatedAt || new Date().toISOString(),
+          loadedUsersMap.set(cleanEmail, {
+            uid: `assigned-${cleanEmail}`,
+            email: cleanEmail,
+            displayName: cleanEmail.split("@")[0],
+            photoURL: null,
+            role: role,
+            permissions: rData.permissions || {
+              manageMovies: true,
+              importMovies: true,
+              manageAds: false,
+              viewAnalytics: true,
+            },
+            isAdmin: role === "admin" || isSuperAdmin,
+            isModerator: role === "moderator",
+            createdAt: rData.updatedAt || new Date().toISOString(),
+          });
         });
-      });
-    }).catch((err) => console.warn("Could not fetch user_roles:", err));
+      } catch (err: any) {
+        console.warn("Could not fetch user_roles:", err?.message || err);
+      }
 
-    const unsubscribe = onSnapshot(
-      usersRef,
-      (snapshot) => {
+      try {
+        const snapshot = await getDocs(usersRef);
+        if (!isMounted) return;
+
         const loadedUsers: UserProfile[] = [];
         const seenEmails = new Set<string>();
 
@@ -414,8 +426,6 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
           if (email) seenEmails.add(email);
 
           const isSuperAdmin = email ? superAdminEmails.includes(email) : false;
-          
-          // Check if user_roles has pre-assigned role
           const preAssigned = email ? loadedUsersMap.get(email) : null;
           let role: UserRole = isSuperAdmin ? "admin" : (data.role || preAssigned?.role || "user");
           if (data.isAdmin || preAssigned?.isAdmin) role = "admin";
@@ -438,27 +448,32 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
           });
         });
 
-        // Add any pre-assigned roles that haven't logged in yet
         loadedUsersMap.forEach((assignedUser, cleanEmail) => {
           if (!seenEmails.has(cleanEmail)) {
             loadedUsers.push(assignedUser);
           }
         });
 
-        // Ensure current user is in list if not populated yet
         if (user && !loadedUsers.some(u => u.uid === user.uid || (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()))) {
           loadedUsers.unshift(user);
         }
 
         setUserList(loadedUsers);
-        setIsLoadingUsers(false);
-      },
-      (err) => {
-        console.warn("Could not fetch user list from Firestore:", err);
-        setIsLoadingUsers(false);
+      } catch (err: any) {
+        console.warn("Could not fetch user list from Firestore:", err?.message || err);
+        if (user && isMounted) {
+          setUserList([user]);
+        }
+      } finally {
+        if (isMounted) setIsLoadingUsers(false);
       }
-    );
-    return () => unsubscribe();
+    };
+
+    fetchUserList();
+
+    return () => {
+      isMounted = false;
+    };
   }, [user?.uid]);
 
   const handleStartEditUser = (targetUser: UserProfile) => {
@@ -590,46 +605,53 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
   // Load existing AdSense settings from Firestore when component mounts
   useEffect(() => {
+    let isMounted = true;
     const docRef = doc(db, "settings", "adsense");
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setAdsEnabled(data.isEnabled !== false);
-        setAdsClient(data.client || "");
-        setAdsBannerSlot(data.bannerSlot || "");
-        setAdsRowSlot(data.rowSlot || "");
-        setAdsSidebarSlot(data.sidebarSlot || "");
-        setAdsFooterSlot(data.footerSlot || "");
+    getDoc(docRef)
+      .then((docSnap) => {
+        if (isMounted && docSnap.exists()) {
+          const data = docSnap.data();
+          setAdsEnabled(data.isEnabled !== false);
+          setAdsClient(data.client || "");
+          setAdsBannerSlot(data.bannerSlot || "");
+          setAdsRowSlot(data.rowSlot || "");
+          setAdsSidebarSlot(data.sidebarSlot || "");
+          setAdsFooterSlot(data.footerSlot || "");
 
-        if (data.customAds) {
-          if (data.customAds.banner) {
-            setCustomBannerTitle(data.customAds.banner.title || "");
-            setCustomBannerDesc(data.customAds.banner.desc || "");
-            setCustomBannerCta(data.customAds.banner.cta || "");
-            setCustomBannerUrl(data.customAds.banner.url || "");
-          }
-          if (data.customAds.row) {
-            setCustomRowTitle(data.customAds.row.title || "");
-            setCustomRowDesc(data.customAds.row.desc || "");
-            setCustomRowCta(data.customAds.row.cta || "");
-            setCustomRowUrl(data.customAds.row.url || "");
-          }
-          if (data.customAds.sidebar) {
-            setCustomSidebarTitle(data.customAds.sidebar.title || "");
-            setCustomSidebarDesc(data.customAds.sidebar.desc || "");
-            setCustomSidebarCta(data.customAds.sidebar.cta || "");
-            setCustomSidebarUrl(data.customAds.sidebar.url || "");
-          }
-          if (data.customAds.footer) {
-            setCustomFooterTitle(data.customAds.footer.title || "");
-            setCustomFooterDesc(data.customAds.footer.desc || "");
-            setCustomFooterCta(data.customAds.footer.cta || "");
-            setCustomFooterUrl(data.customAds.footer.url || "");
+          if (data.customAds) {
+            if (data.customAds.banner) {
+              setCustomBannerTitle(data.customAds.banner.title || "");
+              setCustomBannerDesc(data.customAds.banner.desc || "");
+              setCustomBannerCta(data.customAds.banner.cta || "");
+              setCustomBannerUrl(data.customAds.banner.url || "");
+            }
+            if (data.customAds.row) {
+              setCustomRowTitle(data.customAds.row.title || "");
+              setCustomRowDesc(data.customAds.row.desc || "");
+              setCustomRowCta(data.customAds.row.cta || "");
+              setCustomRowUrl(data.customAds.row.url || "");
+            }
+            if (data.customAds.sidebar) {
+              setCustomSidebarTitle(data.customAds.sidebar.title || "");
+              setCustomSidebarDesc(data.customAds.sidebar.desc || "");
+              setCustomSidebarCta(data.customAds.sidebar.cta || "");
+              setCustomSidebarUrl(data.customAds.sidebar.url || "");
+            }
+            if (data.customAds.footer) {
+              setCustomFooterTitle(data.customAds.footer.title || "");
+              setCustomFooterDesc(data.customAds.footer.desc || "");
+              setCustomFooterCta(data.customAds.footer.cta || "");
+              setCustomFooterUrl(data.customAds.footer.url || "");
+            }
           }
         }
-      }
-    });
-    return () => unsubscribe();
+      })
+      .catch((err) => {
+        console.warn("AdSense settings fetch notice:", err?.message || err);
+      });
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const handleSaveAdSense = async (e: React.FormEvent) => {
