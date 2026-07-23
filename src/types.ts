@@ -20,6 +20,7 @@ export interface Movie {
   imdbId?: string;
   embedUrl?: string;
   downloadUrl?: string;
+  isTV?: boolean;
 }
 
 export interface WatchHistoryItem {

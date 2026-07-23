@@ -1187,7 +1187,13 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
     } catch (err: any) {
-      setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Auto-Bulk process stopped/completed: ${err.message || err}`]);
+      const errMsg = err.message || String(err);
+      if (errMsg.toLowerCase().includes("quota") || errMsg.toLowerCase().includes("resource-exhausted")) {
+        setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ Firestore Daily Limit Reached (Quota Exceeded). Auto-Bulk Importer safely paused.`]);
+        triggerNotification("error", "Firestore daily quota limit reached. Auto-Bulk Importer paused.");
+      } else {
+        setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Auto-Bulk process stopped/completed: ${errMsg}`]);
+      }
     } finally {
       setIsAutoBulkRunning(false);
     }

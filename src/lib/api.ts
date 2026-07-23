@@ -1,8 +1,7 @@
 // CodeSpecters & TMDB API Service Module
 export const TMDB_KEY = "2f7af29f7b3212357b2cabc9e79f0f9f";
 export const TMDB_KEY_ALT = "90f67e516bce299e8adf6c603a59bc0e";
-export const EMBED_API_KEY = "nx_e36f1a0f6e01e81658f6d86c62de1bf9";
-export const EMBED_API_KEY_ALT = "nx_8d7e08dae69a5cdf088d0095c57be900";
+export const EMBED_API_KEY = "nx_8d7e08dae69a5cdf088d0095c57be900";
 export const EMBED_BASE = "https://api.codespecters.com";
 export const IMG_BASE = "https://image.tmdb.org/t/p/w300";
 export const IMG_BASE_LG = "https://image.tmdb.org/t/p/w780";

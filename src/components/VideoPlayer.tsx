@@ -26,6 +26,7 @@ import {
   Info
 } from "lucide-react";
 import { Movie } from "../types";
+import { EMBED_API_KEY } from "../lib/api";
 
 interface VideoPlayerProps {
   movie: Movie;
@@ -72,13 +73,17 @@ export default function VideoPlayer({
   const [showDownloadModal, setShowDownloadModal] = useState(false);
 
   // Server selection state:
-  // "server1" -> Primary Stream URL / Embed
-  // "server2" -> Embed Mirror (Vidsrc / Archive / Autoembed)
-  // "server3" -> High-Speed Full HD Backup Stream
-  // "server4" -> Unblocked YouTube / Invidious Proxy Engine
-  const [activeServer, setActiveServer] = useState<"server1" | "server2" | "server3" | "server4">("server1");
+  // "server1" -> VidSrc Pro (Ultra HD Primary)
+  // "server2" -> AutoEmbed (Fast CDN Stream)
+  // "server3" -> VidSrc CC (Global Mirror)
+  // "server4" -> CodeSpecters Stream API
+  // "server5" -> VidSrc TO (Legacy Mirror)
+  // "server6" -> Backup Full HD Direct Stream
+  // "server7" -> YouTube Unblocked / Proxy Trailer
+  const [activeServer, setActiveServer] = useState<"server1" | "server2" | "server3" | "server4" | "server5" | "server6" | "server7">("server1");
   const [ytProxyEngine, setYtProxyEngine] = useState<"nocookie" | "invidious" | "piped">("nocookie");
   const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
+  const [adBlockShield, setAdBlockShield] = useState<boolean>(true);
 
   // Extract YouTube Video ID if present
   const youtubeId = useMemo(() => {
@@ -94,25 +99,51 @@ export default function VideoPlayer({
     return "";
   }, [movie]);
 
+  // Clean TMDB/IMDB ID for embed providers
+  const tmdbOrCleanId = useMemo(() => {
+    if (movie.tmdbId) return movie.tmdbId;
+    if (movie.imdbId) return movie.imdbId;
+    return movie.id.replace(/^(tmdb-movie-|tmdb-tv-|omdb-|fdb-|mb-|dj-|ia-|mcl-)/, "").split("-")[0];
+  }, [movie]);
+
+  const isTVSeries = useMemo(() => {
+    return movie.isTV || movie.subCategory === "Web Series" || movie.id.includes("-tv-") || (movie.duration && movie.duration.toLowerCase().includes("season"));
+  }, [movie]);
+
   // Derive movie stream URL or iframe embed based on active server
   const currentStreamInfo = useMemo(() => {
     let url = movie.videoUrl || movie.embedUrl || "";
 
-    if (activeServer === "server2") {
+    if (activeServer === "server1") {
+      url = isTVSeries
+        ? `https://api.codespecters.com/embed/tv/${tmdbOrCleanId}/1/1?apikey=${EMBED_API_KEY}`
+        : `https://api.codespecters.com/embed/movie/${tmdbOrCleanId}?apikey=${EMBED_API_KEY}`;
+    } else if (activeServer === "server2") {
+      url = isTVSeries
+        ? `https://vidsrc.pro/embed/tv/${tmdbOrCleanId}/1/1`
+        : `https://vidsrc.pro/embed/movie/${tmdbOrCleanId}`;
+    } else if (activeServer === "server3") {
+      url = isTVSeries
+        ? `https://autoembed.co/tv/tmdb/${tmdbOrCleanId}-1-1`
+        : `https://autoembed.co/movie/tmdb/${tmdbOrCleanId}`;
+    } else if (activeServer === "server4") {
+      url = isTVSeries
+        ? `https://vidsrc.cc/v2/embed/tv/${tmdbOrCleanId}/1/1`
+        : `https://vidsrc.cc/v2/embed/movie/${tmdbOrCleanId}`;
+    } else if (activeServer === "server5") {
       if ((movie.embedUrl && movie.embedUrl.includes("archive.org")) || movie.id.startsWith("ia-")) {
         const iaId = movie.id.replace(/^ia-/, "");
         url = `https://archive.org/embed/${iaId}`;
       } else {
-        const cleanId = movie.tmdbId || movie.imdbId || movie.id.replace(/^(omdb-|fdb-|mb-|dj-|ia-)/, "");
-        url = `https://vidsrc.to/embed/movie/${cleanId}`;
+        url = `https://vidsrc.to/embed/${isTVSeries ? "tv" : "movie"}/${tmdbOrCleanId}`;
       }
-    } else if (activeServer === "server3") {
+    } else if (activeServer === "server6") {
       let numericHash = 0;
       for (let i = 0; i < movie.id.length; i++) {
         numericHash += movie.id.charCodeAt(i);
       }
       url = BACKUP_MP4_POOL[numericHash % BACKUP_MP4_POOL.length];
-    } else if (activeServer === "server4") {
+    } else if (activeServer === "server7") {
       if (youtubeId) {
         if (ytProxyEngine === "invidious") {
           url = `https://invidious.nerdvpn.de/embed/${youtubeId}?autoplay=1`;
@@ -135,8 +166,6 @@ export default function VideoPlayer({
         const match = url.match(/archive\.org\/(?:download|details|embed)\/([^/]+)/);
         if (match && match[1]) {
           url = `https://archive.org/embed/${match[1]}`;
-        } else if (movie.embedUrl && movie.embedUrl.includes("/embed/")) {
-          url = movie.embedUrl;
         } else {
           const iaId = movie.id.replace(/^ia-/, "");
           url = `https://archive.org/embed/${iaId}`;
@@ -144,7 +173,7 @@ export default function VideoPlayer({
       }
     } else if (youtubeId || url.includes("youtube.com/watch") || url.includes("youtu.be/")) {
       isIframe = true;
-      if (activeServer !== "server4" && youtubeId) {
+      if (activeServer !== "server7" && youtubeId) {
         url = `https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=1&rel=0&modestbranding=1`;
       }
     } else if (
@@ -152,6 +181,7 @@ export default function VideoPlayer({
       url.includes("vidsrc") ||
       url.includes("autoembed") ||
       url.includes("2embed") ||
+      url.includes("codespecters") ||
       url.includes("player") ||
       url.includes("youtube.com/embed") ||
       url.includes("dailymotion.com/embed") ||
@@ -161,7 +191,17 @@ export default function VideoPlayer({
     }
 
     return { url, isIframe };
-  }, [movie, activeServer, youtubeId, ytProxyEngine]);
+  }, [movie, activeServer, youtubeId, ytProxyEngine, tmdbOrCleanId, isTVSeries]);
+
+  const rotateServerNext = () => {
+    const serversList: Array<"server1" | "server2" | "server3" | "server4" | "server5" | "server6"> = ["server1", "server2", "server3", "server4", "server5", "server6"];
+    const currentIndex = serversList.indexOf(activeServer as any);
+    const nextIndex = (currentIndex + 1) % serversList.length;
+    const nextServer = serversList[nextIndex];
+    setActiveServer(nextServer);
+    setHasError(false);
+    setFallbackMessage(`Switched to ${nextServer.toUpperCase()} Stream Provider`);
+  };
 
   // Auto-hide controls when mouse is inactive
   useEffect(() => {
@@ -407,7 +447,7 @@ export default function VideoPlayer({
                 : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
             }`}
           >
-            Server 1 (Default)
+            Server 1 (CodeSpecters HD)
           </button>
 
           <button
@@ -418,7 +458,7 @@ export default function VideoPlayer({
                 : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
             }`}
           >
-            Server 2 (Embed Mirror)
+            Server 2 (VidSrc Pro)
           </button>
 
           <button
@@ -429,21 +469,77 @@ export default function VideoPlayer({
                 : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
             }`}
           >
-            Server 3 (Full HD Direct)
+            Server 3 (AutoEmbed)
+          </button>
+
+          <button
+            onClick={() => { setActiveServer("server4"); setHasError(false); setFallbackMessage(null); }}
+            className={`px-2.5 py-1 rounded border transition-all cursor-pointer font-bold ${
+              activeServer === "server4"
+                ? "bg-red-600 border-red-500 text-white shadow"
+                : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
+            }`}
+          >
+            Server 4 (VidSrc CC)
+          </button>
+
+          <button
+            onClick={() => { setActiveServer("server5"); setHasError(false); setFallbackMessage(null); }}
+            className={`px-2.5 py-1 rounded border transition-all cursor-pointer font-bold ${
+              activeServer === "server5"
+                ? "bg-red-600 border-red-500 text-white shadow"
+                : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
+            }`}
+          >
+            Server 5 (VidSrc TO)
+          </button>
+
+          <button
+            onClick={() => { setActiveServer("server6"); setHasError(false); setFallbackMessage(null); }}
+            className={`px-2.5 py-1 rounded border transition-all cursor-pointer font-bold ${
+              activeServer === "server6"
+                ? "bg-red-600 border-red-500 text-white shadow"
+                : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
+            }`}
+          >
+            Server 6 (Full HD Direct)
           </button>
 
           {youtubeId && (
             <button
-              onClick={() => { setActiveServer("server4"); setHasError(false); setFallbackMessage(null); }}
+              onClick={() => { setActiveServer("server7"); setHasError(false); setFallbackMessage(null); }}
               className={`px-2.5 py-1 rounded border transition-all cursor-pointer font-bold ${
-                activeServer === "server4"
+                activeServer === "server7"
                   ? "bg-red-600 border-red-500 text-white shadow"
                   : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white"
               }`}
             >
-              Server 4 (YouTube Proxy)
+              Server 7 (YouTube Proxy)
             </button>
           )}
+
+          <button
+            onClick={rotateServerNext}
+            className="px-2.5 py-1 bg-amber-600/80 hover:bg-amber-500 border border-amber-500 text-white font-bold rounded flex items-center gap-1 transition-all shadow cursor-pointer text-[11px]"
+            title="Auto-rotate to next available stream server if video is unavailable"
+          >
+            <RefreshCw size={12} />
+            <span>অন্য সার্ভার (Rotate)</span>
+          </button>
+
+          {/* Ad Shield Toggle */}
+          <button
+            onClick={() => setAdBlockShield(!adBlockShield)}
+            className={`px-2.5 py-1 rounded border transition-all cursor-pointer font-bold text-[11px] flex items-center gap-1 ${
+              adBlockShield
+                ? "bg-indigo-600/20 border-indigo-500/40 text-indigo-300"
+                : "bg-neutral-900 border-neutral-800 text-neutral-500"
+            }`}
+            title="Blocks popup ads and unwanted redirects from third-party players"
+          >
+            <ShieldCheck size={12} className={adBlockShield ? "text-indigo-400" : "text-neutral-500"} />
+            <span>Ad Shield: {adBlockShield ? "ON" : "OFF"}</span>
+          </button>
 
           {/* Unblocked Direct Watch Button */}
           <button
@@ -452,7 +548,7 @@ export default function VideoPlayer({
             title="Opens video stream in unblocked direct window"
           >
             <ExternalLink size={12} />
-            <span>সরাসরি দেখুন</span>
+            <span>সরাসরি প্লেয়ার</span>
           </button>
 
           {/* Download Button */}
@@ -601,16 +697,25 @@ export default function VideoPlayer({
               className="w-full h-full border-0"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
               allowFullScreen
+              sandbox={adBlockShield ? "allow-scripts allow-same-origin allow-forms allow-presentation" : undefined}
             />
-            {/* Overlay notice for unblocking external window if iframe is blocked by third party */}
-            <div className="absolute top-2 right-2 z-30">
+            {/* Overlay toolbar for unblocking and quick server switching if embed fails or shows ads */}
+            <div className="absolute top-2 right-2 z-30 flex items-center gap-1.5 flex-wrap">
+              <button
+                onClick={rotateServerNext}
+                className="bg-amber-600/90 hover:bg-amber-500 text-white text-[10px] font-bold px-2 py-1 rounded border border-amber-400 flex items-center gap-1 shadow-lg transition-all cursor-pointer"
+                title="Rotate to next streaming server if stream is unavailable"
+              >
+                <RefreshCw size={11} />
+                <span>অন্য সার্ভার (Rotate)</span>
+              </button>
               <button
                 onClick={handleOpenDirectWatch}
-                className="bg-black/80 hover:bg-red-600 text-white text-[10px] font-bold px-2.5 py-1 rounded border border-neutral-700 hover:border-red-500 flex items-center gap-1 shadow-lg transition-all cursor-pointer"
+                className="bg-black/90 hover:bg-emerald-600 text-white text-[10px] font-bold px-2.5 py-1 rounded border border-neutral-700 hover:border-emerald-500 flex items-center gap-1 shadow-lg transition-all cursor-pointer"
                 title="Open stream in unblocked external player"
               >
                 <ExternalLink size={11} />
-                <span>ব্লক দেখালে এখানে ক্লিক করুন (Unblocked Player)</span>
+                <span>সরাসরি প্লেয়ার (Unblocked Player)</span>
               </button>
             </div>
           </div>

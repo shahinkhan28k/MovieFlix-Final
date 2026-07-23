@@ -166,11 +166,11 @@ export default function App() {
         }
         setIsLoading(false);
       },
-      (error) => {
-        console.error("Firestore loading error:", error);
-        // Offline or connection block fallback
-        setMovies(INITIAL_MOVIES);
-        setFeaturedMovie(INITIAL_MOVIES[0]);
+      (error: any) => {
+        console.warn("Firestore movies subscription notice (fallback mode):", error?.message || error);
+        // Offline or quota exceeded fallback: ensure movies list is populated
+        setMovies((prev) => (prev.length > 0 ? prev : INITIAL_MOVIES));
+        setFeaturedMovie((prev) => (prev ? prev : INITIAL_MOVIES[0]));
         setIsLoading(false);
       }
     );
@@ -192,8 +192,12 @@ export default function App() {
         const featured = loadedMovies.find((m) => m.featured) || loadedMovies[0];
         setFeaturedMovie(featured);
       }
-    } catch (err) {
-      console.error("Refresh movies failed:", err);
+    } catch (err: any) {
+      console.warn("Refresh movies notice (using cached catalog):", err?.message || err);
+      if (movies.length === 0) {
+        setMovies(INITIAL_MOVIES);
+        setFeaturedMovie(INITIAL_MOVIES[0]);
+      }
     }
   };
 
