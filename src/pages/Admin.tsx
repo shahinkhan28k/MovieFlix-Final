@@ -46,6 +46,7 @@ import { doc, setDoc, deleteDoc, getDocs, collection, writeBatch, onSnapshot } f
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { INITIAL_MOVIES, CATEGORIES } from "../data/mockMovies";
 import { generateBulkMovies } from "../data/importerTemplates";
+import { TMDB_KEY, EMBED_API_KEY, EMBED_BASE, IMG_BASE, IMG_BASE_LG, movieEmbedUrl, tvEmbedUrl, posterUrl, formatRating, mapTmdbToMovieDoc, api as tmdbApi } from "../lib/api";
 
 interface AdminProps {
   movies: Movie[];
@@ -68,6 +69,10 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
   const [selectedTmdbIds, setSelectedTmdbIds] = useState<number[]>([]);
   const [isImporting, setIsImporting] = useState(false);
   const [importLogs, setImportLogs] = useState<string[]>([]);
+
+  // Unlimited Auto-Bulk Importer Mode
+  const [isAutoBulkRunning, setIsAutoBulkRunning] = useState(false);
+  const [autoBulkCount, setAutoBulkCount] = useState(0);
 
   // OMDB Importer States
   const [omdbApiKey, setOmdbApiKey] = useState(() => localStorage.getItem("omdb_api_key") || "5a8f6331");
@@ -1058,8 +1063,11 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
         const ratingCode = assignRatingCode(mappedCategory, movieObj.vote_average);
         const movieDuration = generateDuration(movieObj.id);
-        let streamUrl = STREAM_POOL[Math.abs(movieObj.id) % STREAM_POOL.length];
-        let embedUrl = `https://vidsrc.to/embed/movie/${movieObj.id}`;
+        let embedUrl = movieEmbedUrl(movieObj.id);
+        if (movieObj.media_type === "tv" || movieObj.first_air_date) {
+          embedUrl = tvEmbedUrl(movieObj.id, 1, 1);
+        }
+        let streamUrl = embedUrl;
         const releaseYear = movieObj.release_date ? Number(movieObj.release_date.split("-")[0]) : 2026;
 
         // Auto-search archive.org/details/moviesandfilms for matching video stream
@@ -1120,6 +1128,75 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     } finally {
       setIsImporting(false);
     }
+  };
+
+  // Continuous Auto-Bulk Importer Engine (Unlimited Loop across feed types & TMDB pages)
+  const startContinuousAutoBulkImport = async () => {
+    if (isAutoBulkRunning) return;
+    setIsAutoBulkRunning(true);
+    setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🚀 STARTED UNLIMITED CONTINUOUS AUTO-BULK IMPORT PROCESS...`]);
+
+    const feeds: Array<"popular" | "top_rated" | "now_playing" | "upcoming"> = ["popular", "top_rated", "now_playing", "upcoming"];
+    let currentFeedIdx = 0;
+    let pageTracker = tmdbPage;
+    let totalImportedInSession = 0;
+
+    try {
+      while (true) {
+        const feed = feeds[currentFeedIdx % feeds.length];
+        setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🔄 [Auto-Bulk Loop] Fetching Feed: "${feed.toUpperCase()}" | Page: ${pageTracker}...`]);
+
+        let pageResults: any[] = [];
+        try {
+          const resData = await tmdbApi.discoverMovies(`page=${pageTracker}&sort_by=popularity.desc`);
+          if (resData?.results?.length > 0) {
+            pageResults = resData.results;
+          } else {
+            const fallbackRes = await tmdbApi.popularMovies(pageTracker);
+            pageResults = fallbackRes?.results || [];
+          }
+        } catch (e: any) {
+          setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Auto-Bulk fetch warning on page ${pageTracker}: ${e.message || e}`]);
+        }
+
+        if (pageResults.length > 0) {
+          const batch = writeBatch(db);
+          let stagedInBatch = 0;
+
+          for (const item of pageResults) {
+            const docObj = mapTmdbToMovieDoc(item);
+            const docRef = doc(db, "movies", docObj.id);
+            batch.set(docRef, docObj, { merge: true });
+            stagedInBatch++;
+            totalImportedInSession++;
+            setAutoBulkCount(totalImportedInSession);
+          }
+
+          await batch.commit();
+          setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✅ Auto-Bulk synced ${stagedInBatch} movies (Total Session: ${totalImportedInSession})`]);
+          await onRefreshMovies();
+        }
+
+        pageTracker++;
+        if (pageTracker > 20) {
+          pageTracker = 1;
+          currentFeedIdx++;
+        }
+
+        // Brief delay before fetching next page to prevent hitting API rate limits
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+    } catch (err: any) {
+      setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Auto-Bulk process stopped/completed: ${err.message || err}`]);
+    } finally {
+      setIsAutoBulkRunning(false);
+    }
+  };
+
+  const stopContinuousAutoBulkImport = () => {
+    setIsAutoBulkRunning(false);
+    setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🛑 Continuous Auto-Bulk Importer paused by user.`]);
+    triggerNotification("success", "Auto-Bulk Importer paused.");
   };
 
   const fetchFromOmdb = async () => {
@@ -4053,7 +4130,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
                 <button
                   onClick={fetchFromTmdb}
-                  disabled={isFetchingTmdb || isImporting}
+                  disabled={isFetchingTmdb || isImporting || isAutoBulkRunning}
                   className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white font-extrabold rounded text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg active:scale-95 disabled:opacity-50"
                 >
                   {isFetchingTmdb ? (
@@ -4068,6 +4145,42 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
                     </>
                   )}
                 </button>
+
+                {/* Unlimited Continuous Auto-Bulk Controls */}
+                <div className="pt-3 border-t border-neutral-900 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-white flex items-center gap-1.5">
+                      <Sparkles size={13} className="text-amber-400" />
+                      <span>Unlimited Auto-Bulk Mode</span>
+                    </span>
+                    {isAutoBulkRunning && (
+                      <span className="text-[10px] font-mono text-emerald-400 font-bold animate-pulse">
+                        ● Running ({autoBulkCount} synced)
+                      </span>
+                    )}
+                  </div>
+
+                  {!isAutoBulkRunning ? (
+                    <button
+                      onClick={startContinuousAutoBulkImport}
+                      className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-900/20 active:scale-95"
+                    >
+                      <Play size={13} />
+                      <span>Start Continuous Auto-Import</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={stopContinuousAutoBulkImport}
+                      className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-extrabold rounded text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg active:scale-95"
+                    >
+                      <X size={13} />
+                      <span>Pause Auto-Import Loop</span>
+                    </button>
+                  )}
+                  <p className="text-[9px] text-neutral-500 font-normal leading-tight">
+                    Continuously fetches TMDB feeds & automatically adds streams to database with no limit.
+                  </p>
+                </div>
               </div>
 
               {/* Status & logs Console */}
