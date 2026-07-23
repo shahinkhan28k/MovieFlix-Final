@@ -81,7 +81,8 @@ export function mapTmdbToMovieDoc(item: any, isTV = false, customCategory?: stri
     ? parseInt(item.first_air_date.split("-")[0])
     : new Date().getFullYear();
 
-  const ratingVal = item.vote_average ? item.vote_average.toFixed(1) : "8.2";
+  const rawRating = item.vote_average && item.vote_average > 0 ? item.vote_average : (Math.random() * 1.5 + 7.5);
+  const ratingVal = rawRating.toFixed(1);
   const poster = posterUrl(item.poster_path, true) || "https://images.unsplash.com/photo-1536440136628-849c177e76a1?auto=format&fit=crop&w=800&q=80";
   const backdrop = posterUrl(item.backdrop_path, true) || poster;
 
@@ -90,17 +91,19 @@ export function mapTmdbToMovieDoc(item: any, isTV = false, customCategory?: stri
 
   let genreCategory = customCategory;
   if (!genreCategory || genreCategory === "auto") {
+    const genreIds = item.genre_ids || [];
     if (isTVDetected) {
       genreCategory = "Web Series";
     } else {
-      const genreIds = item.genre_ids || [];
       if (genreIds.includes(28)) genreCategory = "Action";
-      else if (genreIds.includes(35)) genreCategory = "Comedy";
-      else if (genreIds.includes(18)) genreCategory = "Drama";
-      else if (genreIds.includes(878)) genreCategory = "Sci-Fi";
-      else if (genreIds.includes(27)) genreCategory = "Horror";
+      else if (genreIds.includes(12)) genreCategory = "Adventure";
       else if (genreIds.includes(16)) genreCategory = "Animation";
+      else if (genreIds.includes(35)) genreCategory = "Comedy";
+      else if (genreIds.includes(80)) genreCategory = "Crime";
+      else if (genreIds.includes(18)) genreCategory = "Drama";
+      else if (genreIds.includes(27)) genreCategory = "Horror";
       else if (genreIds.includes(10749)) genreCategory = "Romance";
+      else if (genreIds.includes(878)) genreCategory = "Sci-Fi";
       else genreCategory = "Hollywood";
     }
   }
@@ -108,7 +111,7 @@ export function mapTmdbToMovieDoc(item: any, isTV = false, customCategory?: stri
   return {
     id: docId,
     title,
-    description: item.overview || `Watch ${title} (${year}) full ${isTVDetected ? "TV Series" : "movie"} in HD 1080p. Auto-embedded via CodeSpecters Stream API.`,
+    description: item.overview || `Watch ${title} (${year}) full ${isTVDetected ? "TV Series" : "movie"} in HD 1080p. High-quality streaming available with multiple server options.`,
     thumbnail: poster,
     bannerUrl: backdrop,
     videoUrl: embedPlayer,
@@ -118,11 +121,11 @@ export function mapTmdbToMovieDoc(item: any, isTV = false, customCategory?: stri
     subCategory: isTVDetected ? "Web Series" : "HD Movies",
     language: item.original_language ? item.original_language.toUpperCase() : "English",
     year,
-    duration: isTVDetected ? "Season 1" : "2h 10m",
+    duration: isTVDetected ? "Season 1" : "2h 05m",
     rating: `${ratingVal}/10`,
-    featured: (item.vote_average || 0) > 7.5,
-    views: Math.floor(Math.random() * 8000) + 1200,
-    likes: Math.floor(Math.random() * 1500) + 300,
+    featured: (item.vote_average || 0) > 7.0,
+    views: Math.floor(Math.random() * 25000) + 12000,
+    likes: Math.floor(Math.random() * 5000) + 2100,
     tmdbId,
     isTV: isTVDetected,
     createdAt: new Date().toISOString()

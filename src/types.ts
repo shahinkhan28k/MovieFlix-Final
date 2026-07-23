@@ -21,6 +21,7 @@ export interface Movie {
   embedUrl?: string;
   downloadUrl?: string;
   isTV?: boolean;
+  bannerUrl?: string;
 }
 
 export interface WatchHistoryItem {

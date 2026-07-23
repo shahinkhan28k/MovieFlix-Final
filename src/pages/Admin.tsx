@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Film,
   Plus,
@@ -73,6 +73,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
   // Unlimited Auto-Bulk Importer Mode
   const [isAutoBulkRunning, setIsAutoBulkRunning] = useState(false);
+  const autoBulkRef = useRef(false);
   const [autoBulkCount, setAutoBulkCount] = useState(0);
 
   // OMDB Importer States
@@ -240,6 +241,28 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
       if (docs.length > 0) {
         const identifier = docs[0].identifier;
+        try {
+          // Fetch specific metadata to find the actual .mp4 filename for more accurate direct video links
+          const metaRes = await fetch(`https://archive.org/metadata/${identifier}`);
+          if (metaRes.ok) {
+            const metaData = await metaRes.json();
+            const mp4File = metaData.files?.find((f: any) => 
+              f.name.toLowerCase().endsWith(".mp4") && 
+              !f.name.toLowerCase().includes("sample") &&
+              !f.name.toLowerCase().includes("trailer")
+            );
+            if (mp4File) {
+              return {
+                videoUrl: `https://archive.org/download/${identifier}/${mp4File.name}`,
+                embedUrl: `https://archive.org/embed/${identifier}`
+              };
+            }
+          }
+        } catch (metaErr) {
+          console.warn("Archive metadata fetch failed, using fallback path:", metaErr);
+        }
+
+        // Fallback to heuristic identifier path if metadata fetch fails or no clear mp4 found
         return {
           videoUrl: `https://archive.org/download/${identifier}/${identifier}.mp4`,
           embedUrl: `https://archive.org/embed/${identifier}`
@@ -1192,6 +1215,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
   const startContinuousAutoBulkImport = async () => {
     if (isAutoBulkRunning) return;
     setIsAutoBulkRunning(true);
+    autoBulkRef.current = true;
     setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🚀 STARTED UNLIMITED CONTINUOUS AUTO-BULK IMPORT PROCESS...`]);
 
     const feeds: Array<"popular" | "top_rated" | "now_playing" | "upcoming"> = ["popular", "top_rated", "now_playing", "upcoming"];
@@ -1200,7 +1224,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     let totalImportedInSession = 0;
 
     try {
-      while (true) {
+      while (autoBulkRef.current) {
         const feed = feeds[currentFeedIdx % feeds.length];
         setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🔄 [Auto-Bulk Loop] Fetching Feed: "${feed.toUpperCase()}" | Page: ${pageTracker}...`]);
 
@@ -1224,25 +1248,45 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
           for (const item of pageResults) {
             const docObj = mapTmdbToMovieDoc(item);
+            
+            // Try to find a matching video on Archive.org for real file support
+            try {
+              const archiveMatch = await fetchArchiveMatchingVideo(docObj.title);
+              if (archiveMatch) {
+                docObj.videoUrl = archiveMatch.videoUrl;
+                docObj.embedUrl = archiveMatch.embedUrl || docObj.embedUrl;
+                // Update description to mention Archive source if needed
+                if (!docObj.description.includes("Archive")) {
+                   docObj.description += " (Source: Internet Archive)";
+                }
+              }
+            } catch (vErr) {
+              console.warn(`Video matching failed for ${docObj.title}:`, vErr);
+            }
+
             stagedDocs.push(docObj as Movie);
             const docRef = doc(db, "movies", docObj.id);
             batch.set(docRef, docObj, { merge: true });
             stagedInBatch++;
             totalImportedInSession++;
             setAutoBulkCount(totalImportedInSession);
+
+            // Optional: Small delay between items to avoid rate limiting Archive.org
+            await new Promise(resolve => setTimeout(resolve, 500));
           }
 
-          // Instantly save to local storage catalog
+          // Instantly save to local storage catalog as a safety fallback
           saveMoviesToLocalStorage(stagedDocs);
 
           try {
             await batch.commit();
+            setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🌍 Global Sync: ${stagedInBatch} movies pushed to Cloud Firestore.`]);
           } catch (bErr: any) {
             console.warn("Firestore auto-bulk batch commit notice (saved locally):", bErr?.message || bErr);
+            setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ Cloud Sync Notice: Batch saved locally (Firestore offline or quota limit).`]);
           }
 
-          setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✅ Auto-Bulk saved & synced ${stagedInBatch} movies (Total Session: ${totalImportedInSession})`]);
-          await onRefreshMovies();
+          setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✅ Auto-Bulk completed page ${pageTracker} (Total Session: ${totalImportedInSession})`]);
         }
 
         pageTracker++;
@@ -1269,6 +1313,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
   const stopContinuousAutoBulkImport = () => {
     setIsAutoBulkRunning(false);
+    autoBulkRef.current = false;
     setImportLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🛑 Continuous Auto-Bulk Importer paused by user.`]);
     triggerNotification("success", "Auto-Bulk Importer paused.");
   };

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { collection, onSnapshot, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc, arrayUnion, arrayRemove } from "firebase/firestore";
+import { motion, AnimatePresence } from "motion/react";
 import { auth, db } from "./firebase";
 import { Movie, WatchHistoryItem, UserProfile, ThemeSettings, DEFAULT_THEME_SETTINGS, UserRole } from "./types";
 import { INITIAL_MOVIES } from "./data/mockMovies";
@@ -29,10 +30,17 @@ export default function App() {
 
   // Firebase auth & Catalog states
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [movies, setMovies] = useState<Movie[]>([]);
-  const [featuredMovie, setFeaturedMovie] = useState<Movie | null>(null);
+  const [movies, setMovies] = useState<Movie[]>(() => {
+    const local = getLocalStorageMovies();
+    return mergeMovieCatalogs(INITIAL_MOVIES, local);
+  });
+  const [featuredMovie, setFeaturedMovie] = useState<Movie | null>(() => {
+    const local = getLocalStorageMovies();
+    const merged = mergeMovieCatalogs(INITIAL_MOVIES, local);
+    return merged.find(m => m.featured) || merged[0] || null;
+  });
   const [showLogin, setShowLogin] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false); // False by default because we initialize with local data
 
   // Global Theme Settings state
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME_SETTINGS);
@@ -144,7 +152,7 @@ export default function App() {
   // 2. Fetch movies stream catalog from Firestore with fallback for quota limits
   useEffect(() => {
     let isMounted = true;
-    setIsLoading(true);
+    // We don't set isLoading(true) here anymore because we start with local data for instant load
 
     const moviesRef = collection(db, "movies");
     const unsubscribe = onSnapshot(moviesRef, (snapshot) => {
@@ -159,15 +167,18 @@ export default function App() {
 
       if (mergedMovies.length > 0) {
         setMovies(mergedMovies);
-        setFeaturedMovie(prev => prev || mergedMovies.find((m) => m.featured) || mergedMovies[0]);
+        // Only update featured if we don't have one yet or we want to sync with cloud
+        setFeaturedMovie(prev => {
+          if (!prev) return mergedMovies.find((m) => m.featured) || mergedMovies[0];
+          // If the cloud has a featured movie, we might want to prioritize it
+          const cloudFeatured = loadedMovies.find(m => m.featured);
+          return cloudFeatured || prev;
+        });
       }
       setIsLoading(false);
     }, (error) => {
       console.warn("Firestore movies listener notice (offline/local catalog active):", error?.message || error);
       if (isMounted) {
-        const localMovies = getLocalStorageMovies();
-        const mergedMovies = mergeMovieCatalogs(INITIAL_MOVIES, localMovies);
-        setMovies(mergedMovies);
         setIsLoading(false);
       }
     });
@@ -369,158 +380,172 @@ export default function App() {
 
       {/* 2. Primary Page Router View */}
       <main className="flex-grow">
-        {isLoading ? (
-          <div className="h-screen w-full bg-neutral-950 flex flex-col items-center justify-center select-none">
-            <div className="flex items-center gap-1 text-red-600 font-extrabold text-3xl tracking-tighter mb-4 animate-pulse">
-              <span>MOVIE</span>
-              <span className="text-white bg-red-600 px-1.5 py-0.5 rounded text-xl font-black">FLIX</span>
-            </div>
-            <div className="animate-spin h-6 w-6 border-4 border-red-600 border-t-transparent rounded-full" />
-            <p className="text-neutral-500 text-xs font-semibold mt-3">Connecting to Secure Cloud Streams...</p>
-          </div>
-        ) : (
-          <>
-            {/* View Router Switch */}
-            {currentView === "home" && (
-              <Home
-                movies={movies}
-                featuredMovie={featuredMovie}
-                onPlay={handlePlayMovie}
-                onToggleFavorite={handleToggleFavorite}
-                favorites={favorites}
-                watchHistory={watchHistory}
-              />
-            )}
+        <AnimatePresence mode="wait">
+          {isLoading ? (
+            <motion.div
+              key="loader"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="h-screen w-full bg-neutral-950 flex flex-col items-center justify-center select-none"
+            >
+              <div className="flex items-center gap-1 text-red-600 font-extrabold text-3xl tracking-tighter mb-4 animate-pulse">
+                <span>MOVIE</span>
+                <span className="text-white bg-red-600 px-1.5 py-0.5 rounded text-xl font-black">FLIX</span>
+              </div>
+              <div className="animate-spin h-6 w-6 border-4 border-red-600 border-t-transparent rounded-full" />
+              <p className="text-neutral-500 text-xs font-semibold mt-3">Connecting to Secure Cloud Streams...</p>
+            </motion.div>
+          ) : (
+            <motion.div
+              key={currentView}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.35, ease: "easeOut" }}
+            >
+              {/* View Router Switch */}
+              {currentView === "home" && (
+                <Home
+                  movies={movies}
+                  featuredMovie={featuredMovie}
+                  onPlay={handlePlayMovie}
+                  onToggleFavorite={handleToggleFavorite}
+                  favorites={favorites}
+                  watchHistory={watchHistory}
+                />
+              )}
 
-            {currentView === "watch" && selectedMovie && (
-              <Watch
-                movie={selectedMovie}
-                onBack={() => setCurrentView("home")}
-                onPlay={handlePlayMovie}
-                movies={movies}
-                favorites={favorites}
-                onToggleFavorite={handleToggleFavorite}
-              />
-            )}
+              {currentView === "watch" && selectedMovie && (
+                <Watch
+                  movie={selectedMovie}
+                  onBack={() => setCurrentView("home")}
+                  onPlay={handlePlayMovie}
+                  movies={movies}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                />
+              )}
 
-            {currentView === "search" && (
-              <Search
-                query={searchQuery}
-                movies={movies}
-                onPlay={handlePlayMovie}
-                onToggleFavorite={handleToggleFavorite}
-                favorites={favorites}
-                onSelectSearchQuery={(q) => setSearchQuery(q)}
-              />
-            )}
+              {currentView === "search" && (
+                <Search
+                  query={searchQuery}
+                  movies={movies}
+                  onPlay={handlePlayMovie}
+                  onToggleFavorite={handleToggleFavorite}
+                  favorites={favorites}
+                  onSelectSearchQuery={(q) => setSearchQuery(q)}
+                />
+              )}
 
-            {currentView === "category" && selectedCategory && (
-              <Search
-                query={selectedCategory}
-                movies={movies}
-                onPlay={handlePlayMovie}
-                onToggleFavorite={handleToggleFavorite}
-                favorites={favorites}
-                onSelectSearchQuery={(q) => setSearchQuery(q)}
-              />
-            )}
+              {currentView === "category" && selectedCategory && (
+                <Search
+                  query={selectedCategory}
+                  movies={movies}
+                  onPlay={handlePlayMovie}
+                  onToggleFavorite={handleToggleFavorite}
+                  favorites={favorites}
+                  onSelectSearchQuery={(q) => setSearchQuery(q)}
+                />
+              )}
 
-            {currentView === "favorites" && (
-              <div className="pt-24 pb-16 px-4 md:px-12 select-none min-h-screen">
-                <div className="max-w-7xl mx-auto space-y-8">
-                  <div className="border-b border-neutral-900 pb-5">
-                    <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
-                      <Heart className="text-red-600 h-5 w-5 fill-red-600" />
-                      <span>My Streaming Playlist</span>
-                    </h2>
-                    <p className="text-xs text-neutral-500 mt-1">
-                      You have bookmarked {favorites.length} movie titles.
-                    </p>
-                  </div>
-
-                  {favorites.length > 0 ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
-                      {movies
-                        .filter((m) => favorites.includes(m.id))
-                        .map((movie) => (
-                          <div key={movie.id} className="flex justify-center">
-                            <MovieCard
-                              movie={movie}
-                              onPlay={handlePlayMovie}
-                              onToggleFavorite={handleToggleFavorite}
-                              isFavorite={true}
-                            />
-                          </div>
-                        ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-20 bg-neutral-950 rounded-lg border border-neutral-900/60 max-w-xl mx-auto">
-                      <Heart size={40} className="text-neutral-700 mx-auto mb-4" />
-                      <h4 className="text-sm font-bold text-neutral-300">My List is Empty</h4>
-                      <p className="text-xs text-neutral-600 max-w-xs mx-auto mt-1 leading-relaxed">
-                        Hover over any movie cover and click the '+' sign to save it to your personal checklist.
+              {currentView === "favorites" && (
+                <div className="pt-24 pb-16 px-4 md:px-12 select-none min-h-screen">
+                  <div className="max-w-7xl mx-auto space-y-8">
+                    <div className="border-b border-neutral-900 pb-5">
+                      <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
+                        <Heart className="text-red-600 h-5 w-5 fill-red-600" />
+                        <span>My Streaming Playlist</span>
+                      </h2>
+                      <p className="text-xs text-neutral-500 mt-1">
+                        You have bookmarked {favorites.length} movie titles.
                       </p>
                     </div>
-                  )}
 
-                  <div className="pt-8">
-                    <AdSensePlaceholder type="banner" />
+                    {favorites.length > 0 ? (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
+                        {movies
+                          .filter((m) => favorites.includes(m.id))
+                          .map((movie) => (
+                            <div key={movie.id} className="flex justify-center">
+                              <MovieCard
+                                movie={movie}
+                                onPlay={handlePlayMovie}
+                                onToggleFavorite={handleToggleFavorite}
+                                isFavorite={true}
+                              />
+                            </div>
+                          ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-20 bg-neutral-950 rounded-lg border border-neutral-900/60 max-w-xl mx-auto">
+                        <Heart size={40} className="text-neutral-700 mx-auto mb-4" />
+                        <h4 className="text-sm font-bold text-neutral-300">My List is Empty</h4>
+                        <p className="text-xs text-neutral-600 max-w-xs mx-auto mt-1 leading-relaxed">
+                          Hover over any movie cover and click the '+' sign to save it to your personal checklist.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="pt-8">
+                      <AdSensePlaceholder type="banner" />
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {currentView === "history" && (
-              <div className="pt-24 pb-16 px-4 md:px-12 select-none min-h-screen">
-                <div className="max-w-7xl mx-auto space-y-8">
-                  <div className="border-b border-neutral-900 pb-5">
-                    <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
-                      <Clock className="text-red-600 h-5 w-5" />
-                      <span>My Streaming History</span>
-                    </h2>
-                    <p className="text-xs text-neutral-500 mt-1">
-                      Showing your last {watchHistory.length} streamed movies.
-                    </p>
-                  </div>
-
-                  {watchHistory.length > 0 ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
-                      {watchHistory
-                        .map((item) => movies.find((m) => m.id === item.movieId))
-                        .filter((m): m is Movie => !!m)
-                        .map((movie) => (
-                          <div key={movie.id} className="flex justify-center">
-                            <MovieCard
-                              movie={movie}
-                              onPlay={handlePlayMovie}
-                              onToggleFavorite={handleToggleFavorite}
-                              isFavorite={favorites.includes(movie.id)}
-                            />
-                          </div>
-                        ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-20 bg-neutral-950 rounded-lg border border-neutral-900/60 max-w-xl mx-auto">
-                      <Clock size={40} className="text-neutral-700 mx-auto mb-4" />
-                      <h4 className="text-sm font-bold text-neutral-300">No Streaming History</h4>
-                      <p className="text-xs text-neutral-600 max-w-xs mx-auto mt-1 leading-relaxed">
-                        You haven't streamed any movies or trailers yet. Click 'Play Now' on the hero banner to begin.
+              {currentView === "history" && (
+                <div className="pt-24 pb-16 px-4 md:px-12 select-none min-h-screen">
+                  <div className="max-w-7xl mx-auto space-y-8">
+                    <div className="border-b border-neutral-900 pb-5">
+                      <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
+                        <Clock className="text-red-600 h-5 w-5" />
+                        <span>My Streaming History</span>
+                      </h2>
+                      <p className="text-xs text-neutral-500 mt-1">
+                        Showing your last {watchHistory.length} streamed movies.
                       </p>
                     </div>
-                  )}
 
-                  <div className="pt-8">
-                    <AdSensePlaceholder type="banner" />
+                    {watchHistory.length > 0 ? (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
+                        {watchHistory
+                          .map((item) => movies.find((m) => m.id === item.movieId))
+                          .filter((m): m is Movie => !!m)
+                          .map((movie) => (
+                            <div key={movie.id} className="flex justify-center">
+                              <MovieCard
+                                movie={movie}
+                                onPlay={handlePlayMovie}
+                                onToggleFavorite={handleToggleFavorite}
+                                isFavorite={favorites.includes(movie.id)}
+                              />
+                            </div>
+                          ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-20 bg-neutral-950 rounded-lg border border-neutral-900/60 max-w-xl mx-auto">
+                        <Clock size={40} className="text-neutral-700 mx-auto mb-4" />
+                        <h4 className="text-sm font-bold text-neutral-300">No Streaming History</h4>
+                        <p className="text-xs text-neutral-600 max-w-xs mx-auto mt-1 leading-relaxed">
+                          You haven't streamed any movies or trailers yet. Click 'Play Now' on the hero banner to begin.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="pt-8">
+                      <AdSensePlaceholder type="banner" />
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {currentView === "admin" && (
-              <Admin movies={movies} onRefreshMovies={handleRefreshMovies} user={user} />
-            )}
-          </>
-        )}
+              {currentView === "admin" && (
+                <Admin movies={movies} onRefreshMovies={handleRefreshMovies} user={user} />
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
 
       {/* 3. Global Netflix-style Footer */}

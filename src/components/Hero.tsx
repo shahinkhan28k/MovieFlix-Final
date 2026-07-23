@@ -12,13 +12,14 @@ interface HeroProps {
 export default function Hero({ movie, onPlay, onToggleFavorite, isFavorite }: HeroProps) {
   const [isMuted, setIsMuted] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(false);
 
   if (!movie) {
     return (
-      <div className="relative h-[56.25vw] min-h-[350px] max-h-[750px] w-full bg-neutral-950 flex items-center justify-center">
+      <div className="relative h-[56.25vw] min-h-[350px] max-h-[750px] w-full bg-neutral-900 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin h-8 w-8 border-4 border-red-600 border-t-transparent rounded-full mx-auto mb-4" />
-          <p className="text-neutral-400 text-sm">Preparing Spotlight...</p>
+          <p className="text-neutral-400 text-xs font-bold tracking-widest uppercase">Initializing Stream...</p>
         </div>
       </div>
     );
@@ -28,11 +29,13 @@ export default function Hero({ movie, onPlay, onToggleFavorite, isFavorite }: He
     <div className="relative h-[75vw] sm:h-[56.25vw] min-h-[420px] max-h-[820px] w-full overflow-hidden bg-neutral-950 select-none">
       {/* Background Image / Banner */}
       <div className="absolute inset-0">
+        <div className={`absolute inset-0 bg-neutral-900 transition-opacity duration-1000 ${imageLoaded ? 'opacity-0' : 'opacity-100'}`} />
         <img
-          src={movie.thumbnail}
+          src={movie.bannerUrl || movie.thumbnail}
           alt={movie.title}
           referrerPolicy="no-referrer"
-          className="w-full h-full object-cover object-center transform scale-105 filter brightness-[0.7] contrast-[1.05]"
+          onLoad={() => setImageLoaded(true)}
+          className={`w-full h-full object-cover object-center transform scale-105 transition-all duration-1000 ${imageLoaded ? 'opacity-100 scale-100' : 'opacity-0 scale-110'} brightness-[0.7] contrast-[1.05]`}
         />
         {/* Ambient Gradients to blend with Netflix layout */}
         <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/30 to-black/50" />
