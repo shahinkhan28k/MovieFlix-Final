@@ -42,7 +42,7 @@ import {
 } from "lucide-react";
 import { Movie, UserProfile, ModeratorPermissions, UserRole, ThemeSettings, DEFAULT_THEME_SETTINGS, SiteThemeId, SiteMode, ScreenLayoutMode } from "../types";
 import { db, storage } from "../firebase";
-import { doc, setDoc, deleteDoc, getDoc, getDocs, collection, writeBatch } from "firebase/firestore";
+import { doc, setDoc, deleteDoc, getDoc, getDocs, collection, writeBatch, onSnapshot } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { INITIAL_MOVIES, CATEGORIES } from "../data/mockMovies";
 import { generateBulkMovies } from "../data/importerTemplates";
@@ -365,65 +365,48 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
     viewAnalytics: true,
   });
 
-  // Fetch Firestore users and user_roles collections safely
-  const fetchUserList = useCallback(async () => {
+  // Fetch Firestore users and user_roles collections safely using onSnapshot for efficiency
+  useEffect(() => {
     setIsLoadingUsers(true);
     const usersRef = collection(db, "users");
     const rolesRef = collection(db, "user_roles");
-    let loadedUsersMap = new Map<string, UserProfile>();
-
+    
     const superAdminEmails = [
       "admin@movieflix.com",
       "djskshahin544@gmail.com",
       "shahinkhan28qqqq@gmail.com",
-      "shahinkhan28ddd@gmail.com"
+      "shahinkhan28ddd@gmail.com",
+      "shahinkhan28@gmail.com",
+      "shahinkhan28r@gmail.com"
     ];
 
-    try {
-      const rolesSnap = await getDocs(rolesRef);
+    // Real-time listener for roles first to build the map
+    let rolesMap = new Map<string, any>();
+    const unsubRoles = onSnapshot(rolesRef, (rolesSnap) => {
+      const newRolesMap = new Map<string, any>();
       rolesSnap.forEach((roleDoc) => {
         const rData = roleDoc.data();
         const cleanEmail = (rData.email || roleDoc.id).trim().toLowerCase();
-        if (!cleanEmail) return;
-
-        const isSuperAdmin = superAdminEmails.includes(cleanEmail);
-        const role: UserRole = isSuperAdmin ? "admin" : (rData.role || "user");
-
-        loadedUsersMap.set(cleanEmail, {
-          uid: `assigned-${cleanEmail}`,
-          email: cleanEmail,
-          displayName: cleanEmail.split("@")[0],
-          photoURL: null,
-          role: role,
-          permissions: rData.permissions || {
-            manageMovies: true,
-            importMovies: true,
-            manageAds: false,
-            viewAnalytics: true,
-          },
-          isAdmin: role === "admin" || isSuperAdmin,
-          isModerator: role === "moderator",
-          createdAt: rData.updatedAt || new Date().toISOString(),
-        });
+        if (cleanEmail) newRolesMap.set(cleanEmail, rData);
       });
-    } catch (err: any) {
-      console.warn("Could not fetch user_roles:", err?.message || err);
-    }
+      rolesMap = newRolesMap;
+    });
 
-    try {
-      const snapshot = await getDocs(usersRef);
-
+    // Real-time listener for users
+    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
       const loadedUsers: UserProfile[] = [];
       const seenEmails = new Set<string>();
+      const seenUids = new Set<string>();
 
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
         const uid = docSnap.id;
         const email = data.email ? data.email.trim().toLowerCase() : null;
         if (email) seenEmails.add(email);
+        seenUids.add(uid);
 
         const isSuperAdmin = email ? superAdminEmails.includes(email) : false;
-        const preAssigned = email ? loadedUsersMap.get(email) : null;
+        const preAssigned = email ? rolesMap.get(email) : null;
         let role: UserRole = isSuperAdmin ? "admin" : (data.role || preAssigned?.role || "user");
         if (data.isAdmin || preAssigned?.isAdmin) role = "admin";
         else if (data.isModerator || preAssigned?.isModerator) role = "moderator";
@@ -446,30 +429,47 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
         });
       });
 
-      loadedUsersMap.forEach((assignedUser, cleanEmail) => {
+      // Add users from roles that aren't in the users collection yet
+      rolesMap.forEach((rData, cleanEmail) => {
         if (!seenEmails.has(cleanEmail)) {
-          loadedUsers.push(assignedUser);
+          const isSuperAdmin = superAdminEmails.includes(cleanEmail);
+          const role: UserRole = isSuperAdmin ? "admin" : (rData.role || "user");
+          loadedUsers.push({
+            uid: `assigned-${cleanEmail}`,
+            email: cleanEmail,
+            displayName: cleanEmail.split("@")[0],
+            photoURL: null,
+            role: role,
+            permissions: rData.permissions || {
+              manageMovies: true,
+              importMovies: true,
+              manageAds: false,
+              viewAnalytics: true,
+            },
+            isAdmin: role === "admin" || isSuperAdmin,
+            isModerator: role === "moderator",
+            createdAt: rData.updatedAt || new Date().toISOString(),
+          });
         }
       });
 
-      if (user && !loadedUsers.some(u => u.uid === user.uid || (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()))) {
+      if (user && !seenUids.has(user.uid) && !loadedUsers.some(u => (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()))) {
         loadedUsers.unshift(user);
       }
 
       setUserList(loadedUsers);
-    } catch (err: any) {
-      console.warn("Could not fetch user list from Firestore:", err?.message || err);
-      if (user) {
-        setUserList([user]);
-      }
-    } finally {
       setIsLoadingUsers(false);
-    }
-  }, [user]);
+    }, (err) => {
+      console.warn("User list snapshot error:", err);
+      setIsLoadingUsers(false);
+      if (user) setUserList([user]);
+    });
 
-  useEffect(() => {
-    fetchUserList();
-  }, [fetchUserList]);
+    return () => {
+      unsubRoles();
+      unsubUsers();
+    };
+  }, [user]);
 
   const handleStartEditUser = (targetUser: UserProfile) => {
     setEditingUserUid(targetUser.uid);
@@ -546,7 +546,6 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
       triggerNotification("success", `Role saved successfully for ${cleanEmail || targetUid}!`);
       setEditingUserUid(null);
-      await fetchUserList();
     } catch (err: any) {
       console.error("Save role failed:", err);
       triggerNotification("error", `Failed to update role: ${err.message}`);
@@ -618,7 +617,6 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
       triggerNotification("success", `Role successfully assigned to ${cleanEmail}!`);
       setShowAddUserModal(false);
       setManualUserEmail("");
-      await fetchUserList();
     } catch (err: any) {
       console.error("Manual role assignment failed:", err);
       triggerNotification("error", `Role assignment failed: ${err.message}`);
@@ -1253,8 +1251,8 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
           currentFeedIdx++;
         }
 
-        // Brief delay before fetching next page to prevent hitting API rate limits
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        // Substantial delay before fetching next page to prevent hitting API rate limits & Firestore quotas
+        await new Promise(resolve => setTimeout(resolve, 3000));
       }
     } catch (err: any) {
       const errMsg = err.message || String(err);
@@ -7612,7 +7610,7 @@ export default function Admin({ movies, onRefreshMovies, user }: AdminProps) {
 
             <div className="flex items-center gap-2 flex-shrink-0">
               <button
-                onClick={() => fetchUserList()}
+                onClick={() => {}}
                 disabled={isLoadingUsers}
                 className="px-3 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 text-xs font-bold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
                 title="Refresh user list from database"

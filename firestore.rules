@@ -25,7 +25,9 @@ service cloud.firestore {
         request.auth.token.email == "djskshahin544@gmail.com" || 
         request.auth.token.email == "admin@movieflix.com" || 
         request.auth.token.email == "shahinkhan28qqqq@gmail.com" ||
-        request.auth.token.email == "shahinkhan28ddd@gmail.com"
+        request.auth.token.email == "shahinkhan28ddd@gmail.com" ||
+        request.auth.token.email == "shahinkhan28@gmail.com" ||
+        request.auth.token.email == "shahinkhan28r@gmail.com"
       );
     }
 
